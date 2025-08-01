@@ -1,0 +1,27 @@
+{
+  "enabled": true,
+  "authentication_required": true,
+  "rate_limit": {
+    "enabled": true,
+    "requests_per_minute": 60,
+    "requests_per_hour": 1000
+  },
+  "allowed_sources": [],
+  "message_retention": {
+    "enabled": true,
+    "max_messages": 1000,
+    "retention_days": 30
+  },
+  "logging": {
+    "enabled": true,
+    "log_level": "INFO",
+    "log_file": "webhook.log"
+  },
+  "notifications": {
+    "enabled": false,
+    "email": null,
+    "slack_webhook": null
+  },
+  "created_at": "2025-07-31T23:05:11.162149",
+  "updated_at": "2025-07-31T23:05:11.162171"
+}
