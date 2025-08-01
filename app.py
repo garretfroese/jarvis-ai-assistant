@@ -10,12 +10,28 @@ from flask import Flask, jsonify, request, Response, stream_with_context
 from flask_cors import CORS
 from dotenv import load_dotenv
 import requests
+from werkzeug.utils import secure_filename
 
 # Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
+
+# File upload configuration
+UPLOAD_FOLDER = '/tmp/uploads'
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'doc', 'docx', 'csv', 'json'}
+MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB max file size
+
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+
+# Create upload directory if it doesn't exist
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # OpenAI configuration
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
@@ -24,6 +40,7 @@ OPENAI_API_BASE = os.environ.get('OPENAI_API_BASE', 'https://api.openai.com/v1')
 # In-memory conversation storage (for demo purposes)
 conversations = {}
 current_mode = "default"
+uploaded_files = {}  # Store file metadata
 
 @app.route('/')
 def home():
@@ -337,6 +354,171 @@ def set_mode():
             "status": "error"
         }), 400
 
+@app.route('/api/upload', methods=['POST'])
+def upload_file():
+    """File upload endpoint"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"error": "No file selected"}), 400
+        
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            file_id = str(uuid.uuid4())
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{file_id}_{filename}")
+            
+            # Save file
+            file.save(file_path)
+            
+            # Store file metadata
+            file_info = {
+                "id": file_id,
+                "original_name": filename,
+                "path": file_path,
+                "size": os.path.getsize(file_path),
+                "uploaded_at": datetime.now().isoformat(),
+                "type": filename.rsplit('.', 1)[1].lower() if '.' in filename else 'unknown'
+            }
+            
+            uploaded_files[file_id] = file_info
+            
+            return jsonify({
+                "message": "File uploaded successfully",
+                "file_id": file_id,
+                "filename": filename,
+                "size": file_info["size"],
+                "type": file_info["type"],
+                "status": "success"
+            })
+        else:
+            return jsonify({
+                "error": f"File type not allowed. Allowed types: {', '.join(ALLOWED_EXTENSIONS)}"
+            }), 400
+            
+    except Exception as e:
+        return jsonify({"error": f"Upload failed: {str(e)}"}), 500
+
+@app.route('/api/files', methods=['GET'])
+def list_files():
+    """List uploaded files"""
+    try:
+        files_list = []
+        for file_id, file_info in uploaded_files.items():
+            files_list.append({
+                "id": file_id,
+                "name": file_info["original_name"],
+                "size": file_info["size"],
+                "type": file_info["type"],
+                "uploaded_at": file_info["uploaded_at"]
+            })
+        
+        return jsonify({
+            "files": files_list,
+            "count": len(files_list),
+            "status": "success"
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to list files: {str(e)}"}), 500
+
+@app.route('/api/files/<file_id>', methods=['DELETE'])
+def delete_file(file_id):
+    """Delete uploaded file"""
+    try:
+        if file_id not in uploaded_files:
+            return jsonify({"error": "File not found"}), 404
+        
+        file_info = uploaded_files[file_id]
+        
+        # Delete physical file
+        if os.path.exists(file_info["path"]):
+            os.remove(file_info["path"])
+        
+        # Remove from metadata
+        del uploaded_files[file_id]
+        
+        return jsonify({
+            "message": "File deleted successfully",
+            "file_id": file_id,
+            "status": "success"
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to delete file: {str(e)}"}), 500
+
+@app.route('/api/files/<file_id>/analyze', methods=['POST'])
+def analyze_file(file_id):
+    """Analyze uploaded file with AI"""
+    try:
+        if file_id not in uploaded_files:
+            return jsonify({"error": "File not found"}), 404
+        
+        file_info = uploaded_files[file_id]
+        file_path = file_info["path"]
+        
+        # Read file content based on type
+        content = ""
+        if file_info["type"] in ['txt', 'csv', 'json']:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        else:
+            content = f"File: {file_info['original_name']} ({file_info['type']}, {file_info['size']} bytes)"
+        
+        # Get analysis request
+        data = request.get_json() or {}
+        analysis_request = data.get('request', 'Please analyze this file')
+        
+        # Create AI prompt
+        prompt = f"""Please analyze the following file:
+
+File Name: {file_info['original_name']}
+File Type: {file_info['type']}
+File Size: {file_info['size']} bytes
+
+Analysis Request: {analysis_request}
+
+File Content:
+{content[:5000]}  # Limit content to avoid token limits
+
+Please provide a comprehensive analysis."""
+
+        # Call OpenAI API
+        headers = {
+            'Authorization': f'Bearer {OPENAI_API_KEY}',
+            'Content-Type': 'application/json'
+        }
+        
+        payload = {
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": "You are Jarvis, an AI assistant specialized in file analysis. Provide detailed, helpful analysis of uploaded files."},
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 2000,
+            "temperature": 0.7
+        }
+        
+        response = requests.post(f'{OPENAI_API_BASE}/chat/completions', 
+                               headers=headers, json=payload)
+        
+        if response.status_code == 200:
+            ai_response = response.json()
+            analysis = ai_response['choices'][0]['message']['content']
+            
+            return jsonify({
+                "file_id": file_id,
+                "filename": file_info['original_name'],
+                "analysis": analysis,
+                "request": analysis_request,
+                "status": "success"
+            })
+        else:
+            return jsonify({"error": "AI analysis failed"}), 500
+            
+    except Exception as e:
+        return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
+
 @app.route('/diagnose', methods=['GET'])
 @app.route('/api/diagnose', methods=['GET'])
 def diagnose():
@@ -358,13 +540,19 @@ def diagnose():
                 "status": "✅",
                 "conversations_stored": len(conversations)
             },
+            "file_uploads": {
+                "status": "✅",
+                "uploaded_files": len(uploaded_files),
+                "upload_folder": UPLOAD_FOLDER,
+                "allowed_extensions": list(ALLOWED_EXTENSIONS)
+            },
             "api": {
                 "status": "✅",
-                "endpoints": ["chat", "conversations", "mode", "diagnose"]
+                "endpoints": ["chat", "conversations", "mode", "diagnose", "upload", "files"]
             }
         },
-        "version": "3.0.0",
-        "features": ["streaming", "modes", "conversation_management", "diagnostics"]
+        "version": "4.0.0",
+        "features": ["streaming", "modes", "conversation_management", "file_uploads", "file_analysis", "diagnostics"]
     }
     
     return jsonify(diagnostics)
