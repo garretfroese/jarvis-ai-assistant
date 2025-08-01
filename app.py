@@ -34,6 +34,15 @@ except ImportError as e:
     print(f"⚠️ Enhanced session manager not available: {e}")
     SESSION_MANAGER_ENABLED = False
 
+# Import advanced file processor
+try:
+    from src.services.advanced_file_processor import initialize_file_processor, get_file_processor
+    ADVANCED_FILE_PROCESSING = True
+    print("✅ Advanced file processor loaded successfully")
+except ImportError as e:
+    print(f"⚠️ Advanced file processor not available: {e}")
+    ADVANCED_FILE_PROCESSING = False
+
 # Load environment variables
 load_dotenv()
 
@@ -60,6 +69,16 @@ current_mode = 'default'
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 OPENAI_API_BASE = os.getenv('OPENAI_API_BASE', 'https://api.openai.com/v1')
 
+# Initialize advanced file processor
+if ADVANCED_FILE_PROCESSING:
+    file_processor = initialize_file_processor(
+        openai_api_key=OPENAI_API_KEY,
+        openai_api_base=OPENAI_API_BASE
+    )
+    print("✅ Advanced file processor initialized")
+else:
+    file_processor = None
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -78,18 +97,38 @@ def health_check():
     return jsonify({
         "message": "Jarvis AI Assistant is running!",
         "status": "healthy", 
-        "version": "4.0.0"
+        "version": "7.0.0"
     })
 
 @app.route('/diagnose')
 def diagnose():
+    # Get enhanced file statistics if available
+    file_stats = {}
+    if ADVANCED_FILE_PROCESSING and file_processor:
+        try:
+            file_stats = file_processor.get_file_statistics()
+        except:
+            file_stats = {"error": "Failed to get file statistics"}
+    
     return jsonify({
         "status": "healthy",
-        "version": "4.0.0",
+        "version": "7.0.0",
         "mode": current_mode,
         "conversations_count": len(conversations),
         "uploaded_files_count": len(uploaded_files),
-        "openai_configured": bool(OPENAI_API_KEY)
+        "ai_enabled": OPENAI_API_KEY is not None,
+        "tool_routing_enabled": TOOL_ROUTING_ENABLED,
+        "session_manager_enabled": SESSION_MANAGER_ENABLED,
+        "advanced_file_processing": ADVANCED_FILE_PROCESSING,
+        "file_statistics": file_stats,
+        "features": {
+            "chat": True,
+            "file_upload": True,
+            "mode_switching": True,
+            "tool_routing": TOOL_ROUTING_ENABLED,
+            "enhanced_sessions": SESSION_MANAGER_ENABLED,
+            "advanced_files": ADVANCED_FILE_PROCESSING
+        }
     })
 
 @app.route('/api/chat', methods=['POST'])
@@ -372,9 +411,13 @@ def set_mode():
         "status": "error"
     }), 400
 
-# File upload endpoints
+# Advanced File Upload Endpoints
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
+    """Advanced file upload with intelligent processing"""
+    if not ADVANCED_FILE_PROCESSING:
+        return jsonify({"error": "Advanced file processing not available"}), 503
+    
     if 'file' not in request.files:
         return jsonify({"error": "No file provided"}), 400
     
@@ -382,115 +425,303 @@ def upload_file():
     if file.filename == '':
         return jsonify({"error": "No file selected"}), 400
     
-    if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        file_id = str(uuid.uuid4())
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{file_id}_{filename}")
+    try:
+        # Get additional parameters
+        user_id = request.form.get('user_id', 'default')
+        session_id = request.form.get('session_id', None)
         
-        try:
-            file.save(file_path)
-            
-            # Store file metadata
-            uploaded_files[file_id] = {
-                "id": file_id,
-                "name": filename,
-                "path": file_path,
-                "size": os.path.getsize(file_path),
-                "uploaded_at": datetime.now().isoformat()
-            }
-            
-            return jsonify({
-                "file_id": file_id,
-                "filename": filename,
-                "size": uploaded_files[file_id]["size"],
-                "status": "success",
-                "message": "File uploaded successfully"
-            })
-            
-        except Exception as e:
-            return jsonify({"error": f"Upload failed: {str(e)}"}), 500
-    
-    return jsonify({"error": "Invalid file type"}), 400
+        # Save file temporarily
+        filename = secure_filename(file.filename)
+        temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_{uuid.uuid4()}_{filename}")
+        file.save(temp_path)
+        
+        # Process with advanced file processor
+        result = file_processor.upload_file(temp_path, filename, user_id, session_id)
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({"error": f"Upload failed: {str(e)}"}), 500
 
 @app.route('/api/files', methods=['GET'])
 def get_files():
-    return jsonify({
-        "files": list(uploaded_files.values()),
-        "status": "success"
-    })
-
-@app.route('/api/files/<file_id>', methods=['DELETE'])
-def delete_file(file_id):
-    if file_id in uploaded_files:
-        try:
-            # Delete physical file
-            if os.path.exists(uploaded_files[file_id]["path"]):
-                os.remove(uploaded_files[file_id]["path"])
-            
-            # Remove from metadata
-            del uploaded_files[file_id]
-            
-            return jsonify({
-                "status": "success",
-                "message": "File deleted successfully"
-            })
-        except Exception as e:
-            return jsonify({"error": f"Delete failed: {str(e)}"}), 500
-    
-    return jsonify({"error": "File not found"}), 404
-
-@app.route('/api/files/<file_id>/analyze', methods=['POST'])
-def analyze_file(file_id):
-    if file_id not in uploaded_files:
-        return jsonify({"error": "File not found"}), 404
+    """Get files with advanced filtering and search"""
+    if not ADVANCED_FILE_PROCESSING:
+        # Fallback to basic file list
+        return jsonify({
+            "files": list(uploaded_files.values()),
+            "status": "success",
+            "enhanced_features": False
+        })
     
     try:
-        file_info = uploaded_files[file_id]
-        file_path = file_info["path"]
+        user_id = request.args.get('user_id', 'default')
+        session_id = request.args.get('session_id', None)
+        search_query = request.args.get('search', None)
         
-        # Read file content (basic text analysis for now)
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()[:2000]  # First 2000 characters
-        
-        # Generate analysis using AI if available
-        if OPENAI_API_KEY:
-            try:
-                response = requests.post(
-                    f"{OPENAI_API_BASE}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "gpt-4o",
-                        "messages": [
-                            {"role": "system", "content": "You are an AI assistant that analyzes files and provides insights."},
-                            {"role": "user", "content": f"Please analyze this file content and provide insights:\n\nFilename: {file_info['name']}\nContent:\n{content}"}
-                        ],
-                        "max_tokens": 500,
-                        "temperature": 0.7
-                    },
-                    timeout=30
-                )
-                
-                if response.status_code == 200:
-                    analysis = response.json()["choices"][0]["message"]["content"]
-                else:
-                    analysis = f"Analysis failed with status {response.status_code}"
-                    
-            except Exception as e:
-                analysis = f"Analysis error: {str(e)}"
+        if search_query:
+            # Search files
+            results = file_processor.search_files(search_query, user_id)
+            files = [result["metadata"] for result in results]
+        elif session_id:
+            # Get session files
+            files = file_processor.get_session_files(session_id)
         else:
-            analysis = f"File analysis for {file_info['name']}:\n- Size: {file_info['size']} bytes\n- Content preview: {content[:200]}..."
+            # Get all user files
+            files = file_processor.get_user_files(user_id)
         
         return jsonify({
-            "analysis": analysis,
-            "file_info": file_info,
+            "files": files,
+            "total": len(files),
+            "enhanced_features": True,
             "status": "success"
         })
         
     except Exception as e:
+        return jsonify({"error": f"Failed to get files: {str(e)}"}), 500
+
+@app.route('/api/files/<file_id>', methods=['GET'])
+def get_file_details(file_id):
+    """Get detailed file information"""
+    if not ADVANCED_FILE_PROCESSING:
+        # Fallback
+        if file_id in uploaded_files:
+            return jsonify({"file": uploaded_files[file_id], "status": "success"})
+        else:
+            return jsonify({"error": "File not found"}), 404
+    
+    try:
+        metadata = file_processor.get_file_metadata(file_id)
+        if metadata:
+            return jsonify({
+                "file": metadata,
+                "enhanced_features": True,
+                "status": "success"
+            })
+        else:
+            return jsonify({"error": "File not found"}), 404
+            
+    except Exception as e:
+        return jsonify({"error": f"Failed to get file details: {str(e)}"}), 500
+
+@app.route('/api/files/<file_id>', methods=['DELETE'])
+def delete_file(file_id):
+    """Delete file with advanced cleanup"""
+    if not ADVANCED_FILE_PROCESSING:
+        # Fallback to basic deletion
+        if file_id in uploaded_files:
+            try:
+                if os.path.exists(uploaded_files[file_id]["path"]):
+                    os.remove(uploaded_files[file_id]["path"])
+                del uploaded_files[file_id]
+                return jsonify({"status": "success", "message": "File deleted successfully"})
+            except Exception as e:
+                return jsonify({"error": f"Delete failed: {str(e)}"}), 500
+        else:
+            return jsonify({"error": "File not found"}), 404
+    
+    try:
+        success = file_processor.delete_file(file_id)
+        if success:
+            return jsonify({
+                "status": "success",
+                "message": "File deleted successfully"
+            })
+        else:
+            return jsonify({"error": "File not found"}), 404
+            
+    except Exception as e:
+        return jsonify({"error": f"Delete failed: {str(e)}"}), 500
+
+@app.route('/api/files/<file_id>/analyze', methods=['POST'])
+def analyze_file(file_id):
+    """Analyze file with AI insights"""
+    if not ADVANCED_FILE_PROCESSING:
+        # Fallback to basic analysis
+        if file_id not in uploaded_files:
+            return jsonify({"error": "File not found"}), 404
+        
+        try:
+            file_info = uploaded_files[file_id]
+            file_path = file_info["path"]
+            
+            # Basic text analysis
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()[:2000]
+            
+            if OPENAI_API_KEY:
+                try:
+                    response = requests.post(
+                        f"{OPENAI_API_BASE}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {OPENAI_API_KEY}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": "gpt-4o",
+                            "messages": [
+                                {"role": "system", "content": "You are an AI assistant that analyzes files and provides insights."},
+                                {"role": "user", "content": f"Please analyze this file content and provide insights:\n\nFilename: {file_info['name']}\nContent:\n{content}"}
+                            ],
+                            "max_tokens": 500,
+                            "temperature": 0.7
+                        },
+                        timeout=30
+                    )
+                    
+                    if response.status_code == 200:
+                        analysis = response.json()["choices"][0]["message"]["content"]
+                    else:
+                        analysis = f"Analysis failed with status {response.status_code}"
+                        
+                except Exception as e:
+                    analysis = f"Analysis error: {str(e)}"
+            else:
+                analysis = "AI analysis not available - OpenAI API key not configured"
+            
+            return jsonify({
+                "file_id": file_id,
+                "analysis": analysis,
+                "enhanced_features": False,
+                "status": "success"
+            })
+            
+        except Exception as e:
+            return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
+    
+    try:
+        metadata = file_processor.get_file_metadata(file_id)
+        if not metadata:
+            return jsonify({"error": "File not found"}), 404
+        
+        # Check if already analyzed
+        if metadata.get("ai_analyzed"):
+            return jsonify({
+                "file_id": file_id,
+                "analysis": metadata.get("summary", ""),
+                "insights": metadata.get("insights", []),
+                "actions": metadata.get("actions", []),
+                "tags": metadata.get("tags", []),
+                "enhanced_features": True,
+                "status": "success",
+                "cached": True
+            })
+        
+        # Trigger analysis if not done
+        success = file_processor.process_file(file_id)
+        if success:
+            updated_metadata = file_processor.get_file_metadata(file_id)
+            return jsonify({
+                "file_id": file_id,
+                "analysis": updated_metadata.get("summary", ""),
+                "insights": updated_metadata.get("insights", []),
+                "actions": updated_metadata.get("actions", []),
+                "tags": updated_metadata.get("tags", []),
+                "enhanced_features": True,
+                "status": "success",
+                "cached": False
+            })
+        else:
+            return jsonify({"error": "Analysis failed"}), 500
+            
+    except Exception as e:
         return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
+
+@app.route('/api/files/search', methods=['POST'])
+def search_files():
+    """Search files by content, tags, or metadata"""
+    if not ADVANCED_FILE_PROCESSING:
+        return jsonify({"error": "Advanced search not available"}), 503
+    
+    try:
+        data = request.get_json()
+        query = data.get('query', '')
+        user_id = data.get('user_id', 'default')
+        
+        if not query:
+            return jsonify({"error": "Search query is required"}), 400
+        
+        results = file_processor.search_files(query, user_id)
+        
+        return jsonify({
+            "results": results,
+            "total": len(results),
+            "query": query,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Search failed: {str(e)}"}), 500
+
+@app.route('/api/files/statistics', methods=['GET'])
+def get_file_statistics():
+    """Get file processing statistics"""
+    if not ADVANCED_FILE_PROCESSING:
+        # Basic statistics
+        total_files = len(uploaded_files)
+        return jsonify({
+            "statistics": {
+                "total_files": total_files,
+                "enhanced_features": False
+            },
+            "status": "success"
+        })
+    
+    try:
+        stats = file_processor.get_file_statistics()
+        return jsonify({
+            "statistics": stats,
+            "enhanced_features": True,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get statistics: {str(e)}"}), 500
+
+@app.route('/api/files/batch-upload', methods=['POST'])
+def batch_upload_files():
+    """Upload multiple files at once"""
+    if not ADVANCED_FILE_PROCESSING:
+        return jsonify({"error": "Batch upload not available"}), 503
+    
+    try:
+        files = request.files.getlist('files')
+        user_id = request.form.get('user_id', 'default')
+        session_id = request.form.get('session_id', None)
+        
+        if not files:
+            return jsonify({"error": "No files provided"}), 400
+        
+        results = []
+        for file in files:
+            if file.filename != '':
+                try:
+                    filename = secure_filename(file.filename)
+                    temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_{uuid.uuid4()}_{filename}")
+                    file.save(temp_path)
+                    
+                    result = file_processor.upload_file(temp_path, filename, user_id, session_id)
+                    results.append(result)
+                    
+                except Exception as e:
+                    results.append({
+                        "filename": file.filename,
+                        "status": "error",
+                        "message": f"Upload failed: {str(e)}"
+                    })
+        
+        successful_uploads = len([r for r in results if r.get("status") == "uploaded"])
+        
+        return jsonify({
+            "results": results,
+            "total_files": len(files),
+            "successful_uploads": successful_uploads,
+            "failed_uploads": len(files) - successful_uploads,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Batch upload failed: {str(e)}"}), 500
 
 # Tools management endpoints
 @app.route('/api/tools', methods=['GET'])
