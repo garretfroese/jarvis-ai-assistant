@@ -1,6 +1,10 @@
+"""
+Minimal Jarvis AI Assistant for Render Deployment
+"""
+
+import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-import os
 from dotenv import load_dotenv
 
 # Load environment variables
