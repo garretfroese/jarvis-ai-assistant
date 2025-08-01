@@ -25,6 +25,15 @@ except ImportError as e:
     print(f"⚠️ Tool routing system not available: {e}")
     TOOL_ROUTING_ENABLED = False
 
+# Import enhanced session manager
+try:
+    from src.services.session_manager import session_manager, get_session_context, switch_mode as session_switch_mode
+    SESSION_MANAGER_ENABLED = True
+    print("✅ Enhanced session manager loaded successfully")
+except ImportError as e:
+    print(f"⚠️ Enhanced session manager not available: {e}")
+    SESSION_MANAGER_ENABLED = False
+
 # Load environment variables
 load_dotenv()
 
@@ -91,35 +100,69 @@ def chat():
         data = request.get_json()
         message = data.get('message', '')
         conversation_id = data.get('conversation_id', 'default')
+        user_id = data.get('user_id', 'default')
         
-        # Initialize conversation if it doesn't exist
-        if conversation_id not in conversations:
-            conversations[conversation_id] = {
-                "id": conversation_id,
-                "created_at": datetime.now().isoformat(),
-                "messages": [],
-                "mode": current_mode
-            }
+        # Enhanced session management
+        if SESSION_MANAGER_ENABLED:
+            # Get or create session
+            session = session_manager.get_session(conversation_id)
+            if not session:
+                conversation_id = session_manager.create_session(user_id, current_mode)
+                session = session_manager.get_session(conversation_id)
+            
+            # Update current mode from session
+            current_mode = session.get("mode", current_mode)
+        else:
+            # Fallback to old conversation management
+            if conversation_id not in conversations:
+                conversations[conversation_id] = {
+                    "id": conversation_id,
+                    "created_at": datetime.now().isoformat(),
+                    "messages": [],
+                    "mode": current_mode
+                }
         
         # Check for mode switching commands
         if message.startswith('!'):
             mode_command = message.split()[0][1:].lower()
             if mode_command in ['ceo', 'wags', 'legal', 'default']:
+                old_mode = current_mode
                 current_mode = mode_command
-                conversations[conversation_id]["mode"] = current_mode
+                
+                # Enhanced mode switching
+                if SESSION_MANAGER_ENABLED:
+                    session_switch_mode(conversation_id, current_mode)
+                else:
+                    conversations[conversation_id]["mode"] = current_mode
+                
                 return jsonify({
-                    "response": f"Mode switched to: {current_mode.upper()}",
+                    "response": f"🔄 Mode switched from {old_mode.upper()} to {current_mode.upper()}\n\nI'm now operating in {current_mode.upper()} mode with enhanced context awareness.",
                     "conversation_id": conversation_id,
                     "mode": current_mode,
+                    "mode_switch": {
+                        "from": old_mode,
+                        "to": current_mode
+                    },
                     "status": "success"
                 })
         
-        # Add user message to conversation
+        # Create user message with enhanced metadata
         user_message = {
             "role": "user",
             "content": message,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "user_id": user_id,
+            "session_id": conversation_id
         }
+        
+        # Add to enhanced session or fallback
+        if SESSION_MANAGER_ENABLED:
+            session_manager.add_message(conversation_id, user_message)
+            # Get enhanced context for AI
+            session_context = get_session_context(conversation_id)
+        else:
+            conversations[conversation_id]["messages"].append(user_message)
+            session_context = {}
         conversations[conversation_id]["messages"].append(user_message)
         
         # Try tool routing first
@@ -148,9 +191,37 @@ def chat():
         if not ai_response:
             if OPENAI_API_KEY:
                 try:
-                    # Prepare messages for OpenAI
-                    openai_messages = [{"role": "system", "content": get_mode_prompt(current_mode)}]
-                    for msg in conversations[conversation_id]["messages"]:
+                    # Prepare enhanced system prompt with session context
+                    system_prompt = get_mode_prompt(current_mode)
+                    
+                    if SESSION_MANAGER_ENABLED and session_context:
+                        # Add context-aware information to system prompt
+                        context_info = []
+                        
+                        if session_context.get("topics_discussed"):
+                            context_info.append(f"Recent topics: {', '.join(session_context['topics_discussed'][-3:])}")
+                        
+                        if session_context.get("tools_used"):
+                            recent_tools = [tool["tool"] for tool in session_context["tools_used"][-2:]]
+                            context_info.append(f"Recently used tools: {', '.join(recent_tools)}")
+                        
+                        if session_context.get("preferences"):
+                            context_info.append("User preferences available in session memory")
+                        
+                        if context_info:
+                            system_prompt += f"\n\nSession Context: {' | '.join(context_info)}"
+                    
+                    # Prepare messages for OpenAI with enhanced context
+                    openai_messages = [{"role": "system", "content": system_prompt}]
+                    
+                    # Get messages from enhanced session or fallback
+                    if SESSION_MANAGER_ENABLED:
+                        session = session_manager.get_session(conversation_id)
+                        messages_to_send = session.get("messages", [])
+                    else:
+                        messages_to_send = conversations[conversation_id]["messages"]
+                    
+                    for msg in messages_to_send:
                         if msg["role"] != "system":  # Skip tool usage messages for OpenAI
                             openai_messages.append({
                                 "role": msg["role"],
@@ -187,20 +258,56 @@ def chat():
             else:
                 ai_response = f"Hello! I'm Jarvis in {current_mode.upper()} mode. I'm currently running in demo mode. Please configure OpenAI API key for full functionality."
         
-        # Add assistant message to conversation
+        # Create enhanced assistant message
         assistant_message = {
             "role": "assistant", 
             "content": ai_response,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "mode": current_mode,
+            "session_id": conversation_id
         }
-        conversations[conversation_id]["messages"].append(assistant_message)
         
-        return jsonify({
+        # Add tool information if tool was used
+        if tool_result and tool_result.get('routed_to_tool'):
+            assistant_message["tool_info"] = tool_result
+        
+        # Add to enhanced session or fallback
+        if SESSION_MANAGER_ENABLED:
+            session_manager.add_message(conversation_id, assistant_message)
+            # Get updated session statistics
+            session_stats = session_manager.get_session_statistics()
+        else:
+            conversations[conversation_id]["messages"].append(assistant_message)
+            session_stats = {}
+        
+        # Prepare enhanced response
+        response_data = {
             "response": ai_response,
             "conversation_id": conversation_id,
             "mode": current_mode,
             "status": "success"
-        })
+        }
+        
+        # Add enhanced session information
+        if SESSION_MANAGER_ENABLED and session_context:
+            response_data["session_info"] = {
+                "topics_discussed": len(session_context.get("topics_discussed", [])),
+                "tools_used_count": len(session_context.get("tools_used", [])),
+                "session_mode": session_context.get("current_mode", current_mode),
+                "has_preferences": bool(session_context.get("preferences")),
+                "memory_items": len(session_context.get("relevant_long_term", []))
+            }
+        
+        # Add tool routing information
+        if tool_result:
+            response_data["tool_info"] = {
+                "routed_to_tool": tool_result.get("routed_to_tool", False),
+                "tool_name": tool_result.get("tool_name"),
+                "confidence": tool_result.get("confidence", 0),
+                "success": tool_result.get("success", False)
+            }
+        
+        return jsonify(response_data)
         
     except Exception as e:
         return jsonify({
@@ -495,6 +602,120 @@ def route_query_endpoint():
         
     except Exception as e:
         return jsonify({"error": f"Routing failed: {str(e)}"}), 500
+
+# Session Management Endpoints
+@app.route('/api/sessions', methods=['GET'])
+def get_sessions():
+    """Get all sessions for a user"""
+    try:
+        user_id = request.args.get('user_id', 'default')
+        
+        if SESSION_MANAGER_ENABLED:
+            sessions = session_manager.get_user_sessions(user_id)
+            return jsonify({
+                "sessions": sessions,
+                "total": len(sessions),
+                "status": "success"
+            })
+        else:
+            # Fallback to old conversation system
+            user_conversations = []
+            for conv_id, conv_data in conversations.items():
+                user_conversations.append({
+                    "session_id": conv_id,
+                    "mode": conv_data.get("mode", "default"),
+                    "created_at": conv_data.get("created_at"),
+                    "last_activity": conv_data.get("created_at"),
+                    "message_count": len(conv_data.get("messages", []))
+                })
+            
+            return jsonify({
+                "sessions": user_conversations,
+                "total": len(user_conversations),
+                "status": "success"
+            })
+            
+    except Exception as e:
+        return jsonify({"error": f"Failed to get sessions: {str(e)}", "status": "error"}), 500
+
+@app.route('/api/sessions/<session_id>', methods=['GET'])
+def get_session_details(session_id):
+    """Get detailed session information"""
+    try:
+        if SESSION_MANAGER_ENABLED:
+            session = session_manager.get_session(session_id)
+            if session:
+                context = get_session_context(session_id)
+                return jsonify({
+                    "session": session,
+                    "context": context,
+                    "status": "success"
+                })
+            else:
+                return jsonify({"error": "Session not found", "status": "error"}), 404
+        else:
+            # Fallback
+            if session_id in conversations:
+                return jsonify({
+                    "session": conversations[session_id],
+                    "context": {},
+                    "status": "success"
+                })
+            else:
+                return jsonify({"error": "Session not found", "status": "error"}), 404
+                
+    except Exception as e:
+        return jsonify({"error": f"Failed to get session: {str(e)}", "status": "error"}), 500
+
+@app.route('/api/sessions/<session_id>', methods=['DELETE'])
+def delete_session(session_id):
+    """Delete a session"""
+    try:
+        if SESSION_MANAGER_ENABLED:
+            success = session_manager.delete_session(session_id)
+            if success:
+                return jsonify({"message": "Session deleted successfully", "status": "success"})
+            else:
+                return jsonify({"error": "Session not found", "status": "error"}), 404
+        else:
+            # Fallback
+            if session_id in conversations:
+                del conversations[session_id]
+                return jsonify({"message": "Session deleted successfully", "status": "success"})
+            else:
+                return jsonify({"error": "Session not found", "status": "error"}), 404
+                
+    except Exception as e:
+        return jsonify({"error": f"Failed to delete session: {str(e)}", "status": "error"}), 500
+
+@app.route('/api/sessions/statistics', methods=['GET'])
+def get_session_statistics():
+    """Get overall session statistics"""
+    try:
+        if SESSION_MANAGER_ENABLED:
+            stats = session_manager.get_session_statistics()
+            return jsonify({
+                "statistics": stats,
+                "enhanced_features": True,
+                "status": "success"
+            })
+        else:
+            # Basic statistics from conversations
+            total_conversations = len(conversations)
+            total_messages = sum(len(conv.get("messages", [])) for conv in conversations.values())
+            
+            return jsonify({
+                "statistics": {
+                    "total_sessions": total_conversations,
+                    "total_messages": total_messages,
+                    "average_messages_per_session": total_messages / total_conversations if total_conversations > 0 else 0
+                },
+                "enhanced_features": False,
+                "status": "success"
+            })
+            
+    except Exception as e:
+        return jsonify({"error": f"Failed to get statistics: {str(e)}", "status": "error"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
