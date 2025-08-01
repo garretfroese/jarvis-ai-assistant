@@ -3,6 +3,7 @@ Enhanced Jarvis AI Assistant with OpenAI Integration and Advanced Features
 """
 
 import os
+import sys
 import json
 import uuid
 from datetime import datetime
@@ -11,6 +12,18 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import requests
 from werkzeug.utils import secure_filename
+
+# Add src directory to path for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+
+# Import tool routing system
+try:
+    from src.services.tool_router import tool_router, route_and_execute
+    TOOL_ROUTING_ENABLED = True
+    print("✅ Tool routing system loaded successfully")
+except ImportError as e:
+    print(f"⚠️ Tool routing system not available: {e}")
+    TOOL_ROUTING_ENABLED = False
 
 # Load environment variables
 load_dotenv()
@@ -109,42 +122,70 @@ def chat():
         }
         conversations[conversation_id]["messages"].append(user_message)
         
-        # Generate AI response
-        if OPENAI_API_KEY:
+        # Try tool routing first
+        tool_result = None
+        ai_response = None
+        
+        if TOOL_ROUTING_ENABLED:
             try:
-                # Prepare messages for OpenAI
-                openai_messages = [{"role": "system", "content": get_mode_prompt(current_mode)}]
-                for msg in conversations[conversation_id]["messages"]:
-                    openai_messages.append({
-                        "role": msg["role"],
-                        "content": msg["content"]
+                tool_result = route_and_execute(message, threshold=0.3)
+                
+                if tool_result.get('routed_to_tool') and tool_result.get('success'):
+                    ai_response = f"🔧 **Tool Used:** {tool_result['tool_name']}\n\n{tool_result['output']}"
+                    
+                    # Add tool usage info to conversation
+                    conversations[conversation_id]["messages"].append({
+                        "role": "system",
+                        "content": f"Used tool: {tool_result['tool_name']} (confidence: {tool_result['confidence']:.2f})",
+                        "timestamp": datetime.now().isoformat(),
+                        "tool_info": tool_result
                     })
-                
-                # Call OpenAI API
-                response = requests.post(
-                    f"{OPENAI_API_BASE}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "gpt-4o",
-                        "messages": openai_messages,
-                        "max_tokens": 1000,
-                        "temperature": 0.7
-                    },
-                    timeout=30
-                )
-                
-                if response.status_code == 200:
-                    ai_response = response.json()["choices"][0]["message"]["content"]
-                else:
-                    ai_response = f"Sorry, I encountered an error: {response.status_code}"
                     
             except Exception as e:
-                ai_response = f"Sorry, I'm having trouble connecting to my AI service: {str(e)}"
-        else:
-            ai_response = f"Hello! I'm Jarvis in {current_mode.upper()} mode. I'm currently running in demo mode. Please configure OpenAI API key for full functionality."
+                print(f"Tool routing error: {str(e)}")
+        
+        # Fallback to GPT-4o if no tool was used or tool failed
+        if not ai_response:
+            if OPENAI_API_KEY:
+                try:
+                    # Prepare messages for OpenAI
+                    openai_messages = [{"role": "system", "content": get_mode_prompt(current_mode)}]
+                    for msg in conversations[conversation_id]["messages"]:
+                        if msg["role"] != "system":  # Skip tool usage messages for OpenAI
+                            openai_messages.append({
+                                "role": msg["role"],
+                                "content": msg["content"]
+                            })
+                    
+                    # Call OpenAI API
+                    response = requests.post(
+                        f"{OPENAI_API_BASE}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {OPENAI_API_KEY}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": "gpt-4o",
+                            "messages": openai_messages,
+                            "max_tokens": 1000,
+                            "temperature": 0.7
+                        },
+                        timeout=30
+                    )
+                    
+                    if response.status_code == 200:
+                        ai_response = response.json()["choices"][0]["message"]["content"]
+                        
+                        # Add fallback info if tool routing was attempted
+                        if tool_result and not tool_result.get('success'):
+                            ai_response = f"🤖 **AI Response** (tool routing failed):\n\n{ai_response}"
+                    else:
+                        ai_response = f"Sorry, I encountered an error: {response.status_code}"
+                        
+                except Exception as e:
+                    ai_response = f"Sorry, I'm having trouble connecting to my AI service: {str(e)}"
+            else:
+                ai_response = f"Hello! I'm Jarvis in {current_mode.upper()} mode. I'm currently running in demo mode. Please configure OpenAI API key for full functionality."
         
         # Add assistant message to conversation
         assistant_message = {
@@ -343,6 +384,117 @@ def analyze_file(file_id):
         
     except Exception as e:
         return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
+
+# Tools management endpoints
+@app.route('/api/tools', methods=['GET'])
+def get_tools():
+    """Get list of available tools"""
+    if not TOOL_ROUTING_ENABLED:
+        return jsonify({
+            "error": "Tool routing system not available",
+            "tools": []
+        })
+    
+    try:
+        tools = tool_router.get_available_tools()
+        return jsonify({
+            "tools": tools,
+            "count": len(tools),
+            "status": "success"
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to get tools: {str(e)}"}), 500
+
+@app.route('/api/tools/<tool_name>', methods=['GET'])
+def get_tool_info(tool_name):
+    """Get information about a specific tool"""
+    if not TOOL_ROUTING_ENABLED:
+        return jsonify({"error": "Tool routing system not available"})
+    
+    try:
+        tool_info = tool_router.get_tool_info(tool_name)
+        if tool_info:
+            return jsonify(tool_info)
+        else:
+            return jsonify({"error": f"Tool '{tool_name}' not found"}), 404
+    except Exception as e:
+        return jsonify({"error": f"Failed to get tool info: {str(e)}"}), 500
+
+@app.route('/api/tools/<tool_name>/execute', methods=['POST'])
+def execute_tool_endpoint(tool_name):
+    """Execute a specific tool"""
+    if not TOOL_ROUTING_ENABLED:
+        return jsonify({"error": "Tool routing system not available"})
+    
+    try:
+        data = request.get_json()
+        input_text = data.get('input', '')
+        
+        if not input_text:
+            return jsonify({"error": "Input text is required"}), 400
+        
+        result = tool_router.execute_tool(tool_name, input_text)
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({"error": f"Tool execution failed: {str(e)}"}), 500
+
+@app.route('/api/tools/<tool_name>/enable', methods=['POST'])
+def enable_tool(tool_name):
+    """Enable a tool"""
+    if not TOOL_ROUTING_ENABLED:
+        return jsonify({"error": "Tool routing system not available"})
+    
+    try:
+        success = tool_router.enable_tool(tool_name)
+        if success:
+            return jsonify({"message": f"Tool '{tool_name}' enabled", "status": "success"})
+        else:
+            return jsonify({"error": f"Tool '{tool_name}' not found"}), 404
+    except Exception as e:
+        return jsonify({"error": f"Failed to enable tool: {str(e)}"}), 500
+
+@app.route('/api/tools/<tool_name>/disable', methods=['POST'])
+def disable_tool(tool_name):
+    """Disable a tool"""
+    if not TOOL_ROUTING_ENABLED:
+        return jsonify({"error": "Tool routing system not available"})
+    
+    try:
+        success = tool_router.disable_tool(tool_name)
+        if success:
+            return jsonify({"message": f"Tool '{tool_name}' disabled", "status": "success"})
+        else:
+            return jsonify({"error": f"Tool '{tool_name}' not found"}), 404
+    except Exception as e:
+        return jsonify({"error": f"Failed to disable tool: {str(e)}"}), 500
+
+@app.route('/api/route', methods=['POST'])
+def route_query_endpoint():
+    """Route a query to the best tool without executing"""
+    if not TOOL_ROUTING_ENABLED:
+        return jsonify({"error": "Tool routing system not available"})
+    
+    try:
+        data = request.get_json()
+        input_text = data.get('input', '')
+        threshold = data.get('threshold', 0.3)
+        
+        if not input_text:
+            return jsonify({"error": "Input text is required"}), 400
+        
+        tool_name, confidence, routing_info = tool_router.route_query(input_text, threshold)
+        
+        return jsonify({
+            "routed_to_tool": tool_name is not None,
+            "tool_name": tool_name,
+            "confidence": confidence,
+            "routing_info": routing_info,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Routing failed: {str(e)}"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
