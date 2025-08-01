@@ -1,387 +1,418 @@
 """
-Command Execution Logging Service for Jarvis
-Provides centralized logging of all command executions and tool usage
+Comprehensive Logging Service for Jarvis AI Assistant
+Provides activity logging, audit trails, performance monitoring, and workflow tracking.
 """
 
-import os
 import json
-import sqlite3
 import time
-from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional
-from contextlib import contextmanager
+import uuid
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
+import os
+from dataclasses import dataclass, asdict
+from enum import Enum
+
+class LogLevel(Enum):
+    DEBUG = "debug"
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+class LogCategory(Enum):
+    CHAT = "chat"
+    TOOL = "tool"
+    FILE = "file"
+    SESSION = "session"
+    AUTH = "auth"
+    SYSTEM = "system"
+    WORKFLOW = "workflow"
+    ERROR = "error"
+
+@dataclass
+class LogEntry:
+    id: str
+    timestamp: datetime
+    level: LogLevel
+    category: LogCategory
+    user_id: str
+    session_id: str
+    action: str
+    details: Dict[str, Any]
+    duration_ms: Optional[int] = None
+    success: bool = True
+    error_message: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 class LoggingService:
-    def __init__(self):
-        self.db_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'jarvis_logs.db')
-        self.ensure_data_directory()
-        self.init_database()
-    
-    def ensure_data_directory(self):
-        """Ensure the data directory exists"""
-        data_dir = os.path.dirname(self.db_path)
-        if not os.path.exists(data_dir):
-            os.makedirs(data_dir)
-    
-    def init_database(self):
-        """Initialize the SQLite database with required tables"""
-        with self.get_db_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Create logs table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS command_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    user_id TEXT,
-                    session_id TEXT,
-                    command TEXT NOT NULL,
-                    tool_name TEXT,
-                    status TEXT NOT NULL,
-                    output TEXT,
-                    error_message TEXT,
-                    duration_ms INTEGER,
-                    input_tokens INTEGER,
-                    output_tokens INTEGER,
-                    cost_estimate REAL,
-                    metadata TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Create indexes for better query performance
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON command_logs(timestamp)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_id ON command_logs(user_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_tool_name ON command_logs(tool_name)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_status ON command_logs(status)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON command_logs(session_id)')
-            
-            conn.commit()
-    
-    @contextmanager
-    def get_db_connection(self):
-        """Get database connection with proper error handling"""
-        conn = None
-        try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row  # Enable dict-like access
-            yield conn
-        except Exception as e:
-            if conn:
-                conn.rollback()
-            raise e
-        finally:
-            if conn:
-                conn.close()
-    
-    def log_command_execution(self, 
-                            command: str,
-                            tool_name: str = None,
-                            status: str = 'success',
-                            output: str = None,
-                            error_message: str = None,
-                            duration_ms: int = None,
-                            user_id: str = None,
-                            session_id: str = None,
-                            input_tokens: int = None,
-                            output_tokens: int = None,
-                            cost_estimate: float = None,
-                            metadata: Dict[str, Any] = None) -> int:
-        """
-        Log a command execution
+    def __init__(self, log_dir: str = "logs", max_log_files: int = 100):
+        self.log_dir = log_dir
+        self.max_log_files = max_log_files
+        self.logs: List[LogEntry] = []
+        self.max_memory_logs = 1000  # Keep last 1000 logs in memory
         
-        Returns:
-            int: The ID of the created log entry
-        """
+        # Create logs directory if it doesn't exist
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # Load recent logs from files
+        self._load_recent_logs()
+    
+    def _load_recent_logs(self):
+        """Load recent logs from files into memory"""
         try:
-            timestamp = datetime.now(timezone.utc).isoformat()
-            metadata_json = json.dumps(metadata) if metadata else None
+            log_files = sorted([f for f in os.listdir(self.log_dir) if f.endswith('.json')])
             
-            # Truncate output if too long (keep first 1000 chars for summary)
-            output_summary = output[:1000] + '...' if output and len(output) > 1000 else output
+            # Load from most recent files
+            for log_file in log_files[-5:]:  # Load last 5 files
+                file_path = os.path.join(self.log_dir, log_file)
+                try:
+                    with open(file_path, 'r') as f:
+                        for line in f:
+                            if line.strip():
+                                log_data = json.loads(line)
+                                log_entry = self._dict_to_log_entry(log_data)
+                                self.logs.append(log_entry)
+                except Exception as e:
+                    print(f"Error loading log file {log_file}: {e}")
             
-            with self.get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO command_logs 
-                    (timestamp, user_id, session_id, command, tool_name, status, 
-                     output, error_message, duration_ms, input_tokens, output_tokens, 
-                     cost_estimate, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    timestamp, user_id, session_id, command, tool_name, status,
-                    output_summary, error_message, duration_ms, input_tokens, 
-                    output_tokens, cost_estimate, metadata_json
-                ))
-                
-                log_id = cursor.lastrowid
-                conn.commit()
-                return log_id
+            # Keep only recent logs in memory
+            self.logs = self.logs[-self.max_memory_logs:]
+            
+        except Exception as e:
+            print(f"Error loading logs: {e}")
+    
+    def _dict_to_log_entry(self, data: Dict) -> LogEntry:
+        """Convert dictionary to LogEntry object"""
+        return LogEntry(
+            id=data['id'],
+            timestamp=datetime.fromisoformat(data['timestamp']),
+            level=LogLevel(data['level']),
+            category=LogCategory(data['category']),
+            user_id=data['user_id'],
+            session_id=data['session_id'],
+            action=data['action'],
+            details=data['details'],
+            duration_ms=data.get('duration_ms'),
+            success=data.get('success', True),
+            error_message=data.get('error_message'),
+            metadata=data.get('metadata')
+        )
+    
+    def _log_entry_to_dict(self, entry: LogEntry) -> Dict:
+        """Convert LogEntry to dictionary for serialization"""
+        data = asdict(entry)
+        data['timestamp'] = entry.timestamp.isoformat()
+        data['level'] = entry.level.value
+        data['category'] = entry.category.value
+        return data
+    
+    def _write_to_file(self, entry: LogEntry):
+        """Write log entry to file"""
+        try:
+            # Create filename based on date
+            date_str = entry.timestamp.strftime("%Y-%m-%d")
+            filename = f"jarvis_logs_{date_str}.json"
+            filepath = os.path.join(self.log_dir, filename)
+            
+            # Append to file
+            with open(filepath, 'a') as f:
+                json.dump(self._log_entry_to_dict(entry), f)
+                f.write('\n')
                 
         except Exception as e:
-            print(f"Error logging command execution: {e}")
-            return None
+            print(f"Error writing to log file: {e}")
+    
+    def log(self, 
+            level: LogLevel,
+            category: LogCategory,
+            action: str,
+            user_id: str = "default",
+            session_id: str = "default",
+            details: Optional[Dict[str, Any]] = None,
+            duration_ms: Optional[int] = None,
+            success: bool = True,
+            error_message: Optional[str] = None,
+            metadata: Optional[Dict[str, Any]] = None):
+        """Log an activity"""
+        
+        entry = LogEntry(
+            id=str(uuid.uuid4()),
+            timestamp=datetime.now(),
+            level=level,
+            category=category,
+            user_id=user_id,
+            session_id=session_id,
+            action=action,
+            details=details or {},
+            duration_ms=duration_ms,
+            success=success,
+            error_message=error_message,
+            metadata=metadata
+        )
+        
+        # Add to memory
+        self.logs.append(entry)
+        
+        # Keep memory logs limited
+        if len(self.logs) > self.max_memory_logs:
+            self.logs = self.logs[-self.max_memory_logs:]
+        
+        # Write to file
+        self._write_to_file(entry)
+        
+        return entry.id
+    
+    def log_chat_message(self, user_id: str, session_id: str, message: str, 
+                        response: str, tool_used: Optional[str] = None,
+                        duration_ms: Optional[int] = None):
+        """Log a chat interaction"""
+        details = {
+            "user_message": message,
+            "ai_response": response,
+            "tool_used": tool_used,
+            "message_length": len(message),
+            "response_length": len(response)
+        }
+        
+        return self.log(
+            level=LogLevel.INFO,
+            category=LogCategory.CHAT,
+            action="chat_interaction",
+            user_id=user_id,
+            session_id=session_id,
+            details=details,
+            duration_ms=duration_ms
+        )
+    
+    def log_tool_execution(self, user_id: str, session_id: str, tool_name: str,
+                          tool_input: Any, tool_output: Any, success: bool = True,
+                          duration_ms: Optional[int] = None, error_message: Optional[str] = None):
+        """Log tool execution"""
+        details = {
+            "tool_name": tool_name,
+            "tool_input": str(tool_input)[:500],  # Limit input length
+            "tool_output": str(tool_output)[:500],  # Limit output length
+            "input_type": type(tool_input).__name__,
+            "output_type": type(tool_output).__name__
+        }
+        
+        return self.log(
+            level=LogLevel.INFO if success else LogLevel.ERROR,
+            category=LogCategory.TOOL,
+            action="tool_execution",
+            user_id=user_id,
+            session_id=session_id,
+            details=details,
+            duration_ms=duration_ms,
+            success=success,
+            error_message=error_message
+        )
+    
+    def log_file_operation(self, user_id: str, session_id: str, operation: str,
+                          filename: str, file_size: Optional[int] = None,
+                          success: bool = True, duration_ms: Optional[int] = None,
+                          error_message: Optional[str] = None):
+        """Log file operations"""
+        details = {
+            "operation": operation,
+            "filename": filename,
+            "file_size": file_size
+        }
+        
+        return self.log(
+            level=LogLevel.INFO if success else LogLevel.ERROR,
+            category=LogCategory.FILE,
+            action="file_operation",
+            user_id=user_id,
+            session_id=session_id,
+            details=details,
+            duration_ms=duration_ms,
+            success=success,
+            error_message=error_message
+        )
+    
+    def log_session_event(self, user_id: str, session_id: str, event: str,
+                         details: Optional[Dict[str, Any]] = None):
+        """Log session events"""
+        return self.log(
+            level=LogLevel.INFO,
+            category=LogCategory.SESSION,
+            action=event,
+            user_id=user_id,
+            session_id=session_id,
+            details=details or {}
+        )
+    
+    def log_system_event(self, event: str, details: Optional[Dict[str, Any]] = None,
+                        level: LogLevel = LogLevel.INFO):
+        """Log system events"""
+        return self.log(
+            level=level,
+            category=LogCategory.SYSTEM,
+            action=event,
+            user_id="system",
+            session_id="system",
+            details=details or {}
+        )
+    
+    def log_error(self, error_type: str, error_message: str, user_id: str = "system",
+                 session_id: str = "system", details: Optional[Dict[str, Any]] = None):
+        """Log errors"""
+        return self.log(
+            level=LogLevel.ERROR,
+            category=LogCategory.ERROR,
+            action=error_type,
+            user_id=user_id,
+            session_id=session_id,
+            details=details or {},
+            success=False,
+            error_message=error_message
+        )
     
     def get_logs(self, 
-                 limit: int = 100,
-                 offset: int = 0,
-                 user_id: str = None,
-                 session_id: str = None,
-                 tool_name: str = None,
-                 status: str = None,
-                 start_date: str = None,
-                 end_date: str = None,
-                 search_query: str = None) -> List[Dict[str, Any]]:
-        """
-        Retrieve logs with filtering options
+                user_id: Optional[str] = None,
+                session_id: Optional[str] = None,
+                category: Optional[LogCategory] = None,
+                level: Optional[LogLevel] = None,
+                start_time: Optional[datetime] = None,
+                end_time: Optional[datetime] = None,
+                limit: int = 100) -> List[LogEntry]:
+        """Get filtered logs"""
         
-        Args:
-            limit: Maximum number of logs to return
-            offset: Number of logs to skip
-            user_id: Filter by user ID
-            session_id: Filter by session ID
-            tool_name: Filter by tool name
-            status: Filter by status (success/error)
-            start_date: Filter logs after this date (ISO format)
-            end_date: Filter logs before this date (ISO format)
-            search_query: Search in command and output text
+        filtered_logs = self.logs
         
-        Returns:
-            List of log entries as dictionaries
-        """
-        try:
-            with self.get_db_connection() as conn:
-                cursor = conn.cursor()
-                
-                # Build query with filters
-                query = "SELECT * FROM command_logs WHERE 1=1"
-                params = []
-                
-                if user_id:
-                    query += " AND user_id = ?"
-                    params.append(user_id)
-                
-                if session_id:
-                    query += " AND session_id = ?"
-                    params.append(session_id)
-                
-                if tool_name:
-                    query += " AND tool_name = ?"
-                    params.append(tool_name)
-                
-                if status:
-                    query += " AND status = ?"
-                    params.append(status)
-                
-                if start_date:
-                    query += " AND timestamp >= ?"
-                    params.append(start_date)
-                
-                if end_date:
-                    query += " AND timestamp <= ?"
-                    params.append(end_date)
-                
-                if search_query:
-                    query += " AND (command LIKE ? OR output LIKE ?)"
-                    search_pattern = f"%{search_query}%"
-                    params.extend([search_pattern, search_pattern])
-                
-                query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
-                params.extend([limit, offset])
-                
-                cursor.execute(query, params)
-                rows = cursor.fetchall()
-                
-                # Convert to list of dictionaries
-                logs = []
-                for row in rows:
-                    log_entry = dict(row)
-                    
-                    # Parse metadata if present
-                    if log_entry['metadata']:
-                        try:
-                            log_entry['metadata'] = json.loads(log_entry['metadata'])
-                        except json.JSONDecodeError:
-                            log_entry['metadata'] = {}
-                    
-                    logs.append(log_entry)
-                
-                return logs
-                
-        except Exception as e:
-            print(f"Error retrieving logs: {e}")
-            return []
+        # Apply filters
+        if user_id:
+            filtered_logs = [log for log in filtered_logs if log.user_id == user_id]
+        
+        if session_id:
+            filtered_logs = [log for log in filtered_logs if log.session_id == session_id]
+        
+        if category:
+            filtered_logs = [log for log in filtered_logs if log.category == category]
+        
+        if level:
+            filtered_logs = [log for log in filtered_logs if log.level == level]
+        
+        if start_time:
+            filtered_logs = [log for log in filtered_logs if log.timestamp >= start_time]
+        
+        if end_time:
+            filtered_logs = [log for log in filtered_logs if log.timestamp <= end_time]
+        
+        # Sort by timestamp (newest first) and limit
+        filtered_logs.sort(key=lambda x: x.timestamp, reverse=True)
+        return filtered_logs[:limit]
     
-    def get_log_by_id(self, log_id: int) -> Optional[Dict[str, Any]]:
-        """Get a specific log entry by ID with full output"""
+    def get_statistics(self, 
+                      user_id: Optional[str] = None,
+                      start_time: Optional[datetime] = None,
+                      end_time: Optional[datetime] = None) -> Dict[str, Any]:
+        """Get usage statistics"""
+        
+        logs = self.get_logs(user_id=user_id, start_time=start_time, end_time=end_time, limit=10000)
+        
+        stats = {
+            "total_logs": len(logs),
+            "by_category": {},
+            "by_level": {},
+            "by_user": {},
+            "by_session": {},
+            "tool_usage": {},
+            "error_rate": 0,
+            "average_response_time": 0,
+            "most_active_user": None,
+            "most_used_tool": None
+        }
+        
+        total_duration = 0
+        duration_count = 0
+        error_count = 0
+        
+        for log in logs:
+            # Count by category
+            category_key = log.category.value
+            stats["by_category"][category_key] = stats["by_category"].get(category_key, 0) + 1
+            
+            # Count by level
+            level_key = log.level.value
+            stats["by_level"][level_key] = stats["by_level"].get(level_key, 0) + 1
+            
+            # Count by user
+            stats["by_user"][log.user_id] = stats["by_user"].get(log.user_id, 0) + 1
+            
+            # Count by session
+            stats["by_session"][log.session_id] = stats["by_session"].get(log.session_id, 0) + 1
+            
+            # Track tool usage
+            if log.category == LogCategory.TOOL and "tool_name" in log.details:
+                tool_name = log.details["tool_name"]
+                stats["tool_usage"][tool_name] = stats["tool_usage"].get(tool_name, 0) + 1
+            
+            # Track errors
+            if not log.success:
+                error_count += 1
+            
+            # Track response times
+            if log.duration_ms:
+                total_duration += log.duration_ms
+                duration_count += 1
+        
+        # Calculate derived stats
+        if len(logs) > 0:
+            stats["error_rate"] = (error_count / len(logs)) * 100
+        
+        if duration_count > 0:
+            stats["average_response_time"] = total_duration / duration_count
+        
+        # Find most active user
+        if stats["by_user"]:
+            stats["most_active_user"] = max(stats["by_user"], key=stats["by_user"].get)
+        
+        # Find most used tool
+        if stats["tool_usage"]:
+            stats["most_used_tool"] = max(stats["tool_usage"], key=stats["tool_usage"].get)
+        
+        return stats
+    
+    def get_recent_activity(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get recent activity for dashboard"""
+        recent_logs = self.get_logs(limit=limit)
+        
+        activity = []
+        for log in recent_logs:
+            activity.append({
+                "id": log.id,
+                "timestamp": log.timestamp.isoformat(),
+                "level": log.level.value,
+                "category": log.category.value,
+                "action": log.action,
+                "user_id": log.user_id,
+                "session_id": log.session_id,
+                "success": log.success,
+                "duration_ms": log.duration_ms,
+                "details": log.details
+            })
+        
+        return activity
+    
+    def cleanup_old_logs(self, days_to_keep: int = 30):
+        """Clean up old log files"""
         try:
-            with self.get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT * FROM command_logs WHERE id = ?", (log_id,))
-                row = cursor.fetchone()
-                
-                if row:
-                    log_entry = dict(row)
+            cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+            
+            for filename in os.listdir(self.log_dir):
+                if filename.endswith('.json'):
+                    filepath = os.path.join(self.log_dir, filename)
+                    file_time = datetime.fromtimestamp(os.path.getctime(filepath))
                     
-                    # Parse metadata if present
-                    if log_entry['metadata']:
-                        try:
-                            log_entry['metadata'] = json.loads(log_entry['metadata'])
-                        except json.JSONDecodeError:
-                            log_entry['metadata'] = {}
-                    
-                    return log_entry
-                
-                return None
-                
+                    if file_time < cutoff_date:
+                        os.remove(filepath)
+                        print(f"Removed old log file: {filename}")
+                        
         except Exception as e:
-            print(f"Error retrieving log by ID: {e}")
-            return None
-    
-    def get_log_statistics(self, 
-                          start_date: str = None,
-                          end_date: str = None) -> Dict[str, Any]:
-        """Get statistics about logged commands"""
-        try:
-            with self.get_db_connection() as conn:
-                cursor = conn.cursor()
-                
-                # Base query conditions
-                where_clause = "WHERE 1=1"
-                params = []
-                
-                if start_date:
-                    where_clause += " AND timestamp >= ?"
-                    params.append(start_date)
-                
-                if end_date:
-                    where_clause += " AND timestamp <= ?"
-                    params.append(end_date)
-                
-                # Total commands
-                cursor.execute(f"SELECT COUNT(*) FROM command_logs {where_clause}", params)
-                total_commands = cursor.fetchone()[0]
-                
-                # Success rate
-                cursor.execute(f"SELECT COUNT(*) FROM command_logs {where_clause} AND status = 'success'", params)
-                successful_commands = cursor.fetchone()[0]
-                
-                # Most used tools
-                cursor.execute(f"""
-                    SELECT tool_name, COUNT(*) as count 
-                    FROM command_logs {where_clause} AND tool_name IS NOT NULL
-                    GROUP BY tool_name 
-                    ORDER BY count DESC 
-                    LIMIT 10
-                """, params)
-                top_tools = [{'tool': row[0], 'count': row[1]} for row in cursor.fetchall()]
-                
-                # Average duration
-                cursor.execute(f"""
-                    SELECT AVG(duration_ms) 
-                    FROM command_logs {where_clause} AND duration_ms IS NOT NULL
-                """, params)
-                avg_duration = cursor.fetchone()[0] or 0
-                
-                # Commands by status
-                cursor.execute(f"""
-                    SELECT status, COUNT(*) as count 
-                    FROM command_logs {where_clause}
-                    GROUP BY status
-                """, params)
-                status_breakdown = {row[0]: row[1] for row in cursor.fetchall()}
-                
-                # Token usage
-                cursor.execute(f"""
-                    SELECT SUM(input_tokens), SUM(output_tokens), SUM(cost_estimate)
-                    FROM command_logs {where_clause}
-                """, params)
-                token_stats = cursor.fetchone()
-                
-                return {
-                    'total_commands': total_commands,
-                    'successful_commands': successful_commands,
-                    'success_rate': (successful_commands / total_commands * 100) if total_commands > 0 else 0,
-                    'top_tools': top_tools,
-                    'average_duration_ms': round(avg_duration, 2),
-                    'status_breakdown': status_breakdown,
-                    'total_input_tokens': token_stats[0] or 0,
-                    'total_output_tokens': token_stats[1] or 0,
-                    'total_cost_estimate': round(token_stats[2] or 0, 4)
-                }
-                
-        except Exception as e:
-            print(f"Error getting log statistics: {e}")
-            return {}
-    
-    def delete_old_logs(self, days_to_keep: int = 30) -> int:
-        """Delete logs older than specified days"""
-        try:
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
-            cutoff_iso = cutoff_date.isoformat()
-            
-            with self.get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM command_logs WHERE timestamp < ?", (cutoff_iso,))
-                deleted_count = cursor.rowcount
-                conn.commit()
-                
-                return deleted_count
-                
-        except Exception as e:
-            print(f"Error deleting old logs: {e}")
-            return 0
-    
-    def export_logs_to_csv(self, 
-                          filename: str,
-                          start_date: str = None,
-                          end_date: str = None) -> bool:
-        """Export logs to CSV file"""
-        try:
-            import csv
-            
-            logs = self.get_logs(
-                limit=10000,  # Large limit for export
-                start_date=start_date,
-                end_date=end_date
-            )
-            
-            if not logs:
-                return False
-            
-            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-                fieldnames = [
-                    'id', 'timestamp', 'user_id', 'session_id', 'command',
-                    'tool_name', 'status', 'output', 'error_message',
-                    'duration_ms', 'input_tokens', 'output_tokens', 'cost_estimate'
-                ]
-                
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-                
-                for log in logs:
-                    # Remove metadata for CSV export (too complex)
-                    log_copy = {k: v for k, v in log.items() if k != 'metadata'}
-                    writer.writerow(log_copy)
-            
-            return True
-            
-        except Exception as e:
-            print(f"Error exporting logs to CSV: {e}")
-            return False
+            print(f"Error cleaning up logs: {e}")
 
 # Global logging service instance
 logging_service = LoggingService()
-
-def log_command(command: str, **kwargs) -> int:
-    """Convenience function to log a command execution"""
-    return logging_service.log_command_execution(command, **kwargs)
-
-def log_tool_execution(tool_name: str, command: str, **kwargs) -> int:
-    """Convenience function to log a tool execution"""
-    return logging_service.log_command_execution(
-        command=command,
-        tool_name=tool_name,
-        **kwargs
-    )
 

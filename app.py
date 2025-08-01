@@ -43,6 +43,15 @@ except ImportError as e:
     print(f"⚠️ Advanced file processor not available: {e}")
     ADVANCED_FILE_PROCESSING = False
 
+# Import logging service
+try:
+    from src.services.logging_service import logging_service, LogLevel, LogCategory
+    LOGGING_ENABLED = True
+    print("✅ Logging service loaded successfully")
+except ImportError as e:
+    print(f"⚠️ Logging service not available: {e}")
+    LOGGING_ENABLED = False
+
 # Load environment variables
 load_dotenv()
 
@@ -134,12 +143,22 @@ def diagnose():
 @app.route('/api/chat', methods=['POST'])
 def chat():
     global current_mode  # Global declaration at the top
+    start_time = datetime.now()
     
     try:
         data = request.get_json()
         message = data.get('message', '')
         conversation_id = data.get('conversation_id', 'default')
         user_id = data.get('user_id', 'default')
+        
+        # Log incoming chat request
+        if LOGGING_ENABLED:
+            logging_service.log_session_event(
+                user_id=user_id,
+                session_id=conversation_id,
+                event="chat_request_received",
+                details={"message_length": len(message), "mode": current_mode}
+            )
         
         # Enhanced session management
         if SESSION_MANAGER_ENABLED:
@@ -167,6 +186,15 @@ def chat():
             if mode_command in ['ceo', 'wags', 'legal', 'default']:
                 old_mode = current_mode
                 current_mode = mode_command
+                
+                # Log mode switch
+                if LOGGING_ENABLED:
+                    logging_service.log_session_event(
+                        user_id=user_id,
+                        session_id=conversation_id,
+                        event="mode_switch",
+                        details={"from_mode": old_mode, "to_mode": current_mode}
+                    )
                 
                 # Enhanced mode switching
                 if SESSION_MANAGER_ENABLED:
@@ -207,13 +235,27 @@ def chat():
         # Try tool routing first
         tool_result = None
         ai_response = None
+        tool_start_time = datetime.now()
         
         if TOOL_ROUTING_ENABLED:
             try:
                 tool_result = route_and_execute(message, threshold=0.3)
+                tool_duration = (datetime.now() - tool_start_time).total_seconds() * 1000
                 
                 if tool_result.get('routed_to_tool') and tool_result.get('success'):
                     ai_response = f"🔧 **Tool Used:** {tool_result['tool_name']}\n\n{tool_result['output']}"
+                    
+                    # Log successful tool execution
+                    if LOGGING_ENABLED:
+                        logging_service.log_tool_execution(
+                            user_id=user_id,
+                            session_id=conversation_id,
+                            tool_name=tool_result['tool_name'],
+                            tool_input=message,
+                            tool_output=tool_result['output'],
+                            success=True,
+                            duration_ms=int(tool_duration)
+                        )
                     
                     # Add tool usage info to conversation
                     conversations[conversation_id]["messages"].append({
@@ -222,9 +264,33 @@ def chat():
                         "timestamp": datetime.now().isoformat(),
                         "tool_info": tool_result
                     })
+                else:
+                    # Log tool routing attempt but no execution
+                    if LOGGING_ENABLED and tool_result.get('routed_to_tool'):
+                        logging_service.log_tool_execution(
+                            user_id=user_id,
+                            session_id=conversation_id,
+                            tool_name=tool_result.get('tool_name', 'unknown'),
+                            tool_input=message,
+                            tool_output=tool_result.get('output', 'No output'),
+                            success=False,
+                            duration_ms=int(tool_duration),
+                            error_message=tool_result.get('error', 'Tool execution failed')
+                        )
                     
             except Exception as e:
+                tool_duration = (datetime.now() - tool_start_time).total_seconds() * 1000
                 print(f"Tool routing error: {str(e)}")
+                
+                # Log tool routing error
+                if LOGGING_ENABLED:
+                    logging_service.log_error(
+                        error_type="tool_routing_error",
+                        error_message=str(e),
+                        user_id=user_id,
+                        session_id=conversation_id,
+                        details={"message": message, "duration_ms": int(tool_duration)}
+                    )
         
         # Fallback to GPT-4o if no tool was used or tool failed
         if not ai_response:
@@ -346,9 +412,34 @@ def chat():
                 "success": tool_result.get("success", False)
             }
         
+        # Log successful chat completion
+        if LOGGING_ENABLED:
+            total_duration = (datetime.now() - start_time).total_seconds() * 1000
+            tool_name = tool_result.get('tool_name') if tool_result and tool_result.get('routed_to_tool') else None
+            
+            logging_service.log_chat_message(
+                user_id=user_id,
+                session_id=conversation_id,
+                message=message,
+                response=ai_response,
+                tool_used=tool_name,
+                duration_ms=int(total_duration)
+            )
+        
         return jsonify(response_data)
         
     except Exception as e:
+        # Log chat error
+        if LOGGING_ENABLED:
+            total_duration = (datetime.now() - start_time).total_seconds() * 1000
+            logging_service.log_error(
+                error_type="chat_error",
+                error_message=str(e),
+                user_id=data.get('user_id', 'unknown') if 'data' in locals() else 'unknown',
+                session_id=data.get('conversation_id', 'unknown') if 'data' in locals() else 'unknown',
+                details={"duration_ms": int(total_duration)}
+            )
+        
         return jsonify({
             "error": f"Chat error: {str(e)}",
             "status": "error"
@@ -415,6 +506,8 @@ def set_mode():
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
     """Advanced file upload with intelligent processing"""
+    start_time = datetime.now()
+    
     if not ADVANCED_FILE_PROCESSING:
         return jsonify({"error": "Advanced file processing not available"}), 503
     
@@ -430,6 +523,17 @@ def upload_file():
         user_id = request.form.get('user_id', 'default')
         session_id = request.form.get('session_id', None)
         
+        # Log file upload start
+        if LOGGING_ENABLED:
+            logging_service.log_file_operation(
+                user_id=user_id,
+                session_id=session_id or 'default',
+                operation="upload_start",
+                filename=file.filename,
+                file_size=len(file.read())
+            )
+            file.seek(0)  # Reset file pointer after reading for size
+        
         # Save file temporarily
         filename = secure_filename(file.filename)
         temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_{uuid.uuid4()}_{filename}")
@@ -438,9 +542,35 @@ def upload_file():
         # Process with advanced file processor
         result = file_processor.upload_file(temp_path, filename, user_id, session_id)
         
+        # Log successful upload
+        if LOGGING_ENABLED:
+            duration = (datetime.now() - start_time).total_seconds() * 1000
+            logging_service.log_file_operation(
+                user_id=user_id,
+                session_id=session_id or 'default',
+                operation="upload_complete",
+                filename=filename,
+                file_size=result.get('file_size'),
+                success=True,
+                duration_ms=int(duration)
+            )
+        
         return jsonify(result)
         
     except Exception as e:
+        # Log upload error
+        if LOGGING_ENABLED:
+            duration = (datetime.now() - start_time).total_seconds() * 1000
+            logging_service.log_file_operation(
+                user_id=user_id if 'user_id' in locals() else 'unknown',
+                session_id=session_id if 'session_id' in locals() else 'unknown',
+                operation="upload_failed",
+                filename=file.filename if 'file' in locals() else 'unknown',
+                success=False,
+                duration_ms=int(duration),
+                error_message=str(e)
+            )
+        
         return jsonify({"error": f"Upload failed: {str(e)}"}), 500
 
 @app.route('/api/files', methods=['GET'])
@@ -947,6 +1077,136 @@ def get_session_statistics():
             
     except Exception as e:
         return jsonify({"error": f"Failed to get statistics: {str(e)}", "status": "error"}), 500
+
+# Logging and Analytics Endpoints
+@app.route('/api/logs', methods=['GET'])
+def get_logs():
+    """Get filtered logs for dashboard"""
+    if not LOGGING_ENABLED:
+        return jsonify({"error": "Logging service not available"}), 503
+    
+    try:
+        # Get query parameters
+        user_id = request.args.get('user_id')
+        session_id = request.args.get('session_id')
+        category = request.args.get('category')
+        level = request.args.get('level')
+        limit = int(request.args.get('limit', 100))
+        
+        # Convert string parameters to enums if provided
+        category_enum = None
+        if category:
+            try:
+                category_enum = LogCategory(category)
+            except ValueError:
+                return jsonify({"error": f"Invalid category: {category}"}), 400
+        
+        level_enum = None
+        if level:
+            try:
+                level_enum = LogLevel(level)
+            except ValueError:
+                return jsonify({"error": f"Invalid level: {level}"}), 400
+        
+        # Get filtered logs
+        logs = logging_service.get_logs(
+            user_id=user_id,
+            session_id=session_id,
+            category=category_enum,
+            level=level_enum,
+            limit=limit
+        )
+        
+        # Convert to JSON-serializable format
+        logs_data = []
+        for log in logs:
+            logs_data.append({
+                "id": log.id,
+                "timestamp": log.timestamp.isoformat(),
+                "level": log.level.value,
+                "category": log.category.value,
+                "user_id": log.user_id,
+                "session_id": log.session_id,
+                "action": log.action,
+                "details": log.details,
+                "duration_ms": log.duration_ms,
+                "success": log.success,
+                "error_message": log.error_message,
+                "metadata": log.metadata
+            })
+        
+        return jsonify({
+            "logs": logs_data,
+            "total": len(logs_data),
+            "filters": {
+                "user_id": user_id,
+                "session_id": session_id,
+                "category": category,
+                "level": level,
+                "limit": limit
+            },
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get logs: {str(e)}"}), 500
+
+@app.route('/api/logs/statistics', methods=['GET'])
+def get_log_statistics():
+    """Get usage statistics and analytics"""
+    if not LOGGING_ENABLED:
+        return jsonify({"error": "Logging service not available"}), 503
+    
+    try:
+        user_id = request.args.get('user_id')
+        stats = logging_service.get_statistics(user_id=user_id)
+        
+        return jsonify({
+            "statistics": stats,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get statistics: {str(e)}"}), 500
+
+@app.route('/api/logs/activity', methods=['GET'])
+def get_recent_activity():
+    """Get recent activity for dashboard"""
+    if not LOGGING_ENABLED:
+        return jsonify({"error": "Logging service not available"}), 503
+    
+    try:
+        limit = int(request.args.get('limit', 50))
+        activity = logging_service.get_recent_activity(limit=limit)
+        
+        return jsonify({
+            "activity": activity,
+            "total": len(activity),
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get activity: {str(e)}"}), 500
+
+@app.route('/api/logs/cleanup', methods=['POST'])
+def cleanup_logs():
+    """Clean up old log files"""
+    if not LOGGING_ENABLED:
+        return jsonify({"error": "Logging service not available"}), 503
+    
+    try:
+        data = request.get_json() or {}
+        days_to_keep = data.get('days_to_keep', 30)
+        
+        logging_service.cleanup_old_logs(days_to_keep=days_to_keep)
+        
+        return jsonify({
+            "message": f"Cleaned up logs older than {days_to_keep} days",
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to cleanup logs: {str(e)}"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
