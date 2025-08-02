@@ -66,6 +66,8 @@ try:
     from src.services.state_manager import state_manager
     from src.services.api_gateway import api_gateway
     from src.services.external_api import external_api
+    from src.services.compliance_engine import compliance_engine
+    from src.services.governance_framework import governance_framework
     USER_SERVICE_ENABLED = True
     WORKFLOW_ENGINE_ENABLED = True
     WEBHOOK_SERVICE_ENABLED = True
@@ -78,6 +80,8 @@ try:
     STATE_MANAGER_ENABLED = True
     API_GATEWAY_ENABLED = True
     EXTERNAL_API_ENABLED = True
+    COMPLIANCE_ENGINE_ENABLED = True
+    GOVERNANCE_FRAMEWORK_ENABLED = True
     print("✅ User service loaded successfully")
     print("✅ Workflow engine loaded successfully")
     print("✅ Webhook service loaded successfully")
@@ -90,6 +94,8 @@ try:
     print("✅ State manager loaded successfully")
     print("✅ API gateway loaded successfully")
     print("✅ External API loaded successfully")
+    print("✅ Compliance engine loaded successfully")
+    print("✅ Governance framework loaded successfully")
 except ImportError as e:
     print(f"⚠️ Services not available: {e}")
     USER_SERVICE_ENABLED = False
@@ -2364,6 +2370,292 @@ def get_gateway_stats():
         
     except Exception as e:
         return jsonify({"error": f"Failed to get gateway stats: {str(e)}"}), 500
+
+# ===== PHASE 8: COMPLIANCE & GOVERNANCE ENDPOINTS =====
+
+@app.route('/api/compliance/status', methods=['GET'])
+def get_compliance_status():
+    """Get compliance status"""
+    try:
+        if not COMPLIANCE_ENGINE_ENABLED:
+            return jsonify({"error": "Compliance engine not available"}), 503
+        
+        status = compliance_engine.get_compliance_status()
+        
+        return jsonify(status)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get compliance status: {str(e)}"}), 500
+
+@app.route('/api/compliance/gdpr/request', methods=['POST'])
+def submit_gdpr_request():
+    """Submit GDPR data subject request"""
+    try:
+        if not COMPLIANCE_ENGINE_ENABLED:
+            return jsonify({"error": "Compliance engine not available"}), 503
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON data required"}), 400
+        
+        user_id = data.get('user_id', '').strip()
+        request_type = data.get('request_type', '').strip()
+        verification_method = data.get('verification_method', 'email')
+        
+        if not user_id or not request_type:
+            return jsonify({"error": "user_id and request_type are required"}), 400
+        
+        from src.services.compliance_engine import DataSubjectRight
+        try:
+            request_type_enum = DataSubjectRight(request_type)
+        except ValueError:
+            return jsonify({"error": f"Invalid request type: {request_type}"}), 400
+        
+        request_id = compliance_engine.submit_gdpr_request(
+            user_id=user_id,
+            request_type=request_type_enum,
+            verification_method=verification_method
+        )
+        
+        return jsonify({
+            "request_id": request_id,
+            "status": "submitted",
+            "message": "GDPR request submitted successfully"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to submit GDPR request: {str(e)}"}), 500
+
+@app.route('/api/compliance/gdpr/request/<request_id>/process', methods=['POST'])
+def process_gdpr_request(request_id):
+    """Process GDPR data subject request"""
+    try:
+        if not COMPLIANCE_ENGINE_ENABLED:
+            return jsonify({"error": "Compliance engine not available"}), 503
+        
+        result = compliance_engine.process_gdpr_request(request_id)
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to process GDPR request: {str(e)}"}), 500
+
+@app.route('/api/compliance/consent', methods=['POST'])
+def record_consent():
+    """Record user consent"""
+    try:
+        if not COMPLIANCE_ENGINE_ENABLED:
+            return jsonify({"error": "Compliance engine not available"}), 503
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON data required"}), 400
+        
+        user_id = data.get('user_id', '').strip()
+        purpose = data.get('purpose', '').strip()
+        consent_given = data.get('consent_given', False)
+        legal_basis = data.get('legal_basis', 'consent')
+        data_categories = data.get('data_categories', [])
+        retention_period = data.get('retention_period')
+        
+        if not user_id or not purpose:
+            return jsonify({"error": "user_id and purpose are required"}), 400
+        
+        consent_id = compliance_engine.record_consent(
+            user_id=user_id,
+            purpose=purpose,
+            consent_given=consent_given,
+            legal_basis=legal_basis,
+            data_categories=data_categories,
+            retention_period=retention_period
+        )
+        
+        return jsonify({
+            "consent_id": consent_id,
+            "status": "recorded",
+            "message": "Consent recorded successfully"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to record consent: {str(e)}"}), 500
+
+@app.route('/api/compliance/consent/<consent_id>/withdraw', methods=['POST'])
+def withdraw_consent(consent_id):
+    """Withdraw user consent"""
+    try:
+        if not COMPLIANCE_ENGINE_ENABLED:
+            return jsonify({"error": "Compliance engine not available"}), 503
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON data required"}), 400
+        
+        user_id = data.get('user_id', '').strip()
+        if not user_id:
+            return jsonify({"error": "user_id is required"}), 400
+        
+        success = compliance_engine.withdraw_consent(consent_id, user_id)
+        
+        if success:
+            return jsonify({
+                "status": "withdrawn",
+                "message": "Consent withdrawn successfully"
+            })
+        else:
+            return jsonify({"error": "Consent not found or unauthorized"}), 404
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to withdraw consent: {str(e)}"}), 500
+
+@app.route('/api/compliance/user/<user_id>/consents', methods=['GET'])
+def get_user_consents(user_id):
+    """Get all consents for a user"""
+    try:
+        if not COMPLIANCE_ENGINE_ENABLED:
+            return jsonify({"error": "Compliance engine not available"}), 503
+        
+        consents = compliance_engine.get_user_consents(user_id)
+        
+        return jsonify({
+            "user_id": user_id,
+            "consents": consents,
+            "total": len(consents)
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get user consents: {str(e)}"}), 500
+
+@app.route('/api/governance/dashboard', methods=['GET'])
+def get_governance_dashboard():
+    """Get governance dashboard data"""
+    try:
+        if not GOVERNANCE_FRAMEWORK_ENABLED:
+            return jsonify({"error": "Governance framework not available"}), 503
+        
+        dashboard = governance_framework.get_governance_dashboard()
+        
+        return jsonify(dashboard)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get governance dashboard: {str(e)}"}), 500
+
+@app.route('/api/governance/assets', methods=['POST'])
+def register_data_asset():
+    """Register a new data asset"""
+    try:
+        if not GOVERNANCE_FRAMEWORK_ENABLED:
+            return jsonify({"error": "Governance framework not available"}), 503
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON data required"}), 400
+        
+        name = data.get('name', '').strip()
+        description = data.get('description', '').strip()
+        owner = data.get('owner', '').strip()
+        steward = data.get('steward', '').strip()
+        data_sources = data.get('data_sources', [])
+        classification = data.get('classification')
+        
+        if not all([name, description, owner, steward]):
+            return jsonify({"error": "name, description, owner, and steward are required"}), 400
+        
+        # Convert classification if provided
+        classification_enum = None
+        if classification:
+            from src.services.governance_framework import DataClassification
+            try:
+                classification_enum = DataClassification(classification)
+            except ValueError:
+                return jsonify({"error": f"Invalid classification: {classification}"}), 400
+        
+        asset_id = governance_framework.register_data_asset(
+            name=name,
+            description=description,
+            owner=owner,
+            steward=steward,
+            data_sources=data_sources,
+            classification=classification_enum
+        )
+        
+        return jsonify({
+            "asset_id": asset_id,
+            "status": "registered",
+            "message": "Data asset registered successfully"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to register data asset: {str(e)}"}), 500
+
+@app.route('/api/governance/assets/<asset_id>/lineage', methods=['GET'])
+def get_data_lineage(asset_id):
+    """Get data lineage for an asset"""
+    try:
+        if not GOVERNANCE_FRAMEWORK_ENABLED:
+            return jsonify({"error": "Governance framework not available"}), 503
+        
+        direction = request.args.get('direction', 'both')
+        lineage = governance_framework.get_data_lineage(asset_id, direction)
+        
+        if not lineage:
+            return jsonify({"error": "Asset not found"}), 404
+        
+        return jsonify(lineage)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get data lineage: {str(e)}"}), 500
+
+@app.route('/api/governance/assets/<asset_id>/quality', methods=['GET'])
+def evaluate_data_quality(asset_id):
+    """Evaluate data quality for an asset"""
+    try:
+        if not GOVERNANCE_FRAMEWORK_ENABLED:
+            return jsonify({"error": "Governance framework not available"}), 503
+        
+        quality_results = governance_framework.evaluate_data_quality(asset_id)
+        
+        if not quality_results:
+            return jsonify({"error": "Asset not found"}), 404
+        
+        return jsonify(quality_results)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to evaluate data quality: {str(e)}"}), 500
+
+@app.route('/api/governance/access/request', methods=['POST'])
+def request_data_access():
+    """Request access to a data asset"""
+    try:
+        if not GOVERNANCE_FRAMEWORK_ENABLED:
+            return jsonify({"error": "Governance framework not available"}), 503
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON data required"}), 400
+        
+        requester = data.get('requester', '').strip()
+        asset_id = data.get('asset_id', '').strip()
+        access_type = data.get('access_type', '').strip()
+        justification = data.get('justification', '').strip()
+        
+        if not all([requester, asset_id, access_type, justification]):
+            return jsonify({"error": "requester, asset_id, access_type, and justification are required"}), 400
+        
+        request_id = governance_framework.request_data_access(
+            requester=requester,
+            asset_id=asset_id,
+            access_type=access_type,
+            justification=justification
+        )
+        
+        return jsonify({
+            "request_id": request_id,
+            "status": "submitted",
+            "message": "Data access request submitted successfully"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to request data access: {str(e)}"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
