@@ -50,7 +50,7 @@ class AdvancedFileProcessor:
         self.processors = {
             'application/pdf': self.process_pdf,
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document': self.process_docx,
-            'application/msword': self.process_doc,
+            'application/msword': self.process_docx,
             'text/plain': self.process_text,
             'application/json': self.process_json,
             'text/csv': self.process_csv,

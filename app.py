@@ -52,6 +52,15 @@ except ImportError as e:
     print(f"⚠️ Logging service not available: {e}")
     LOGGING_ENABLED = False
 
+# Import user service
+try:
+    from src.services.user_service import user_service
+    USER_SERVICE_ENABLED = True
+    print("✅ User service loaded successfully")
+except ImportError as e:
+    print(f"⚠️ User service not available: {e}")
+    USER_SERVICE_ENABLED = False
+
 # Load environment variables
 load_dotenv()
 
@@ -1207,6 +1216,345 @@ def cleanup_logs():
         
     except Exception as e:
         return jsonify({"error": f"Failed to cleanup logs: {str(e)}"}), 500
+
+# ===== USER MANAGEMENT ENDPOINTS =====
+
+@app.route('/api/auth/register', methods=['POST'])
+def register_user():
+    """Register a new user"""
+    if not USER_SERVICE_ENABLED:
+        return jsonify({"error": "User service not available"}), 503
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        
+        username = data.get('username')
+        email = data.get('email')
+        password = data.get('password')
+        role = data.get('role', 'user')
+        
+        if not all([username, email, password]):
+            return jsonify({"error": "Username, email, and password are required"}), 400
+        
+        # Create user
+        user = user_service.create_user(
+            username=username,
+            email=email,
+            password=password,
+            role=role
+        )
+        
+        if user:
+            # Log user registration
+            if LOGGING_ENABLED:
+                logging_service.log_auth_event(
+                    user_id=user['id'],
+                    event_type="user_registration",
+                    details={"username": username, "email": email, "role": role}
+                )
+            
+            return jsonify({
+                "message": "User registered successfully",
+                "user": {
+                    "id": user['id'],
+                    "username": user['username'],
+                    "email": user['email'],
+                    "role": user['role']
+                },
+                "status": "success"
+            })
+        else:
+            return jsonify({"error": "Failed to create user"}), 400
+        
+    except Exception as e:
+        return jsonify({"error": f"Registration failed: {str(e)}"}), 500
+
+@app.route('/api/auth/login', methods=['POST'])
+def login_user():
+    """Login user and return JWT token"""
+    if not USER_SERVICE_ENABLED:
+        return jsonify({"error": "User service not available"}), 503
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        
+        username = data.get('username')
+        password = data.get('password')
+        
+        if not all([username, password]):
+            return jsonify({"error": "Username and password are required"}), 400
+        
+        # Authenticate user
+        result = user_service.authenticate_user(username, password)
+        
+        if result and result.get('success'):
+            user = result['user']
+            token = result['token']
+            
+            # Log successful login
+            if LOGGING_ENABLED:
+                logging_service.log_auth_event(
+                    user_id=user['id'],
+                    event_type="user_login",
+                    details={"username": username}
+                )
+            
+            return jsonify({
+                "message": "Login successful",
+                "user": {
+                    "id": user['id'],
+                    "username": user['username'],
+                    "email": user['email'],
+                    "role": user['role'],
+                    "permissions": user_service.get_user_permissions(user['role'])
+                },
+                "token": token,
+                "status": "success"
+            })
+        else:
+            # Log failed login
+            if LOGGING_ENABLED:
+                logging_service.log_auth_event(
+                    user_id="unknown",
+                    event_type="login_failed",
+                    details={"username": username}
+                )
+            
+            return jsonify({"error": "Invalid username or password"}), 401
+        
+    except Exception as e:
+        return jsonify({"error": f"Login failed: {str(e)}"}), 500
+
+@app.route('/api/auth/logout', methods=['POST'])
+def logout_user():
+    """Logout user and invalidate token"""
+    if not USER_SERVICE_ENABLED:
+        return jsonify({"error": "User service not available"}), 503
+    
+    try:
+        # Get token from Authorization header
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({"error": "No valid token provided"}), 401
+        
+        token = auth_header.split(' ')[1]
+        
+        # Verify and invalidate token
+        result = user_service.logout_user(token)
+        
+        if result and result.get('success'):
+            user_id = result.get('user_id')
+            
+            # Log logout
+            if LOGGING_ENABLED:
+                logging_service.log_auth_event(
+                    user_id=user_id,
+                    event_type="user_logout",
+                    details={}
+                )
+            
+            return jsonify({
+                "message": "Logout successful",
+                "status": "success"
+            })
+        else:
+            return jsonify({"error": "Invalid token"}), 401
+        
+    except Exception as e:
+        return jsonify({"error": f"Logout failed: {str(e)}"}), 500
+
+@app.route('/api/users', methods=['GET'])
+def get_users():
+    """Get all users (admin only)"""
+    if not USER_SERVICE_ENABLED:
+        return jsonify({"error": "User service not available"}), 503
+    
+    try:
+        # Check authentication and permissions
+        auth_result = check_auth_and_permissions(['user_management'])
+        if not auth_result['success']:
+            return jsonify({"error": auth_result['error']}), auth_result['status_code']
+        
+        users = user_service.get_all_users()
+        
+        return jsonify({
+            "users": users,
+            "total": len(users),
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get users: {str(e)}"}), 500
+
+@app.route('/api/users/<user_id>', methods=['GET'])
+def get_user(user_id):
+    """Get specific user details"""
+    if not USER_SERVICE_ENABLED:
+        return jsonify({"error": "User service not available"}), 503
+    
+    try:
+        # Check authentication
+        auth_result = check_auth_and_permissions([])
+        if not auth_result['success']:
+            return jsonify({"error": auth_result['error']}), auth_result['status_code']
+        
+        # Users can only view their own profile unless they're admin
+        current_user = auth_result['user']
+        if current_user['id'] != user_id and 'user_management' not in user_service.get_user_permissions(current_user['role']):
+            return jsonify({"error": "Permission denied"}), 403
+        
+        user = user_service.get_user_by_id(user_id)
+        
+        if user:
+            return jsonify({
+                "user": user,
+                "status": "success"
+            })
+        else:
+            return jsonify({"error": "User not found"}), 404
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get user: {str(e)}"}), 500
+
+@app.route('/api/users/<user_id>', methods=['PUT'])
+def update_user(user_id):
+    """Update user details"""
+    if not USER_SERVICE_ENABLED:
+        return jsonify({"error": "User service not available"}), 503
+    
+    try:
+        # Check authentication
+        auth_result = check_auth_and_permissions([])
+        if not auth_result['success']:
+            return jsonify({"error": auth_result['error']}), auth_result['status_code']
+        
+        # Users can only update their own profile unless they're admin
+        current_user = auth_result['user']
+        if current_user['id'] != user_id and 'user_management' not in user_service.get_user_permissions(current_user['role']):
+            return jsonify({"error": "Permission denied"}), 403
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        
+        # Update user
+        updated_user = user_service.update_user(user_id, data)
+        
+        if updated_user:
+            # Log user update
+            if LOGGING_ENABLED:
+                logging_service.log_auth_event(
+                    user_id=user_id,
+                    event_type="user_updated",
+                    details={"updated_by": current_user['id'], "fields": list(data.keys())}
+                )
+            
+            return jsonify({
+                "message": "User updated successfully",
+                "user": updated_user,
+                "status": "success"
+            })
+        else:
+            return jsonify({"error": "Failed to update user"}), 400
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to update user: {str(e)}"}), 500
+
+@app.route('/api/users/<user_id>', methods=['DELETE'])
+def delete_user(user_id):
+    """Delete user (admin only)"""
+    if not USER_SERVICE_ENABLED:
+        return jsonify({"error": "User service not available"}), 503
+    
+    try:
+        # Check authentication and permissions
+        auth_result = check_auth_and_permissions(['user_management'])
+        if not auth_result['success']:
+            return jsonify({"error": auth_result['error']}), auth_result['status_code']
+        
+        current_user = auth_result['user']
+        
+        # Prevent self-deletion
+        if current_user['id'] == user_id:
+            return jsonify({"error": "Cannot delete your own account"}), 400
+        
+        # Delete user
+        success = user_service.delete_user(user_id)
+        
+        if success:
+            # Log user deletion
+            if LOGGING_ENABLED:
+                logging_service.log_auth_event(
+                    user_id=user_id,
+                    event_type="user_deleted",
+                    details={"deleted_by": current_user['id']}
+                )
+            
+            return jsonify({
+                "message": "User deleted successfully",
+                "status": "success"
+            })
+        else:
+            return jsonify({"error": "Failed to delete user"}), 400
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to delete user: {str(e)}"}), 500
+
+@app.route('/api/users/statistics', methods=['GET'])
+def get_user_statistics():
+    """Get user statistics (admin only)"""
+    if not USER_SERVICE_ENABLED:
+        return jsonify({"error": "User service not available"}), 503
+    
+    try:
+        # Check authentication and permissions
+        auth_result = check_auth_and_permissions(['user_management'])
+        if not auth_result['success']:
+            return jsonify({"error": auth_result['error']}), auth_result['status_code']
+        
+        stats = user_service.get_user_statistics()
+        
+        return jsonify({
+            "statistics": stats,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get user statistics: {str(e)}"}), 500
+
+def check_auth_and_permissions(required_permissions=None):
+    """Helper function to check authentication and permissions"""
+    if not USER_SERVICE_ENABLED:
+        return {"success": False, "error": "User service not available", "status_code": 503}
+    
+    try:
+        # Get token from Authorization header
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return {"success": False, "error": "No valid token provided", "status_code": 401}
+        
+        token = auth_header.split(' ')[1]
+        
+        # Verify token
+        user = user_service.verify_token(token)
+        if not user:
+            return {"success": False, "error": "Invalid or expired token", "status_code": 401}
+        
+        # Check permissions if required
+        if required_permissions:
+            user_permissions = user_service.get_user_permissions(user['role'])
+            for permission in required_permissions:
+                if permission not in user_permissions:
+                    return {"success": False, "error": f"Permission denied: {permission}", "status_code": 403}
+        
+        return {"success": True, "user": user}
+        
+    except Exception as e:
+        return {"success": False, "error": f"Authentication failed: {str(e)}", "status_code": 500}
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
