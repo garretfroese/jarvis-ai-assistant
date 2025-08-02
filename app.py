@@ -55,11 +55,19 @@ except ImportError as e:
 # Import user service
 try:
     from src.services.user_service import user_service
+    from src.services.workflow_engine import workflow_engine
+    from src.services.webhook_service import webhook_service
     USER_SERVICE_ENABLED = True
+    WORKFLOW_ENGINE_ENABLED = True
+    WEBHOOK_SERVICE_ENABLED = True
     print("✅ User service loaded successfully")
+    print("✅ Workflow engine loaded successfully")
+    print("✅ Webhook service loaded successfully")
 except ImportError as e:
     print(f"⚠️ User service not available: {e}")
     USER_SERVICE_ENABLED = False
+    WORKFLOW_ENGINE_ENABLED = False
+    WEBHOOK_SERVICE_ENABLED = False
 
 # Load environment variables
 load_dotenv()
@@ -1555,6 +1563,169 @@ def check_auth_and_permissions(required_permissions=None):
         
     except Exception as e:
         return {"success": False, "error": f"Authentication failed: {str(e)}", "status_code": 500}
+
+# Workflow API Endpoints
+@app.route('/api/workflows', methods=['GET'])
+def get_workflows():
+    """Get all available workflows"""
+    try:
+        if not WORKFLOW_ENGINE_ENABLED:
+            return jsonify({"error": "Workflow engine not available"}), 503
+        
+        workflows = workflow_engine.get_workflow_definitions()
+        
+        return jsonify({
+            "workflows": workflows,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get workflows: {str(e)}"}), 500
+
+@app.route('/api/workflows/execute/<workflow_id>', methods=['POST'])
+def execute_workflow(workflow_id):
+    """Execute a workflow"""
+    try:
+        if not WORKFLOW_ENGINE_ENABLED:
+            return jsonify({"error": "Workflow engine not available"}), 503
+        
+        data = request.get_json() or {}
+        context = data.get('context', {})
+        user_id = data.get('user_id')
+        
+        # Execute workflow asynchronously
+        execution_id = workflow_engine.execute_workflow(workflow_id, context, user_id)
+        
+        return jsonify({
+            "execution_id": execution_id,
+            "workflow_id": workflow_id,
+            "status": "started",
+            "message": "Workflow execution started"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to execute workflow: {str(e)}"}), 500
+
+@app.route('/api/workflows/executions/<execution_id>', methods=['GET'])
+def get_workflow_execution(execution_id):
+    """Get workflow execution status"""
+    try:
+        if not WORKFLOW_ENGINE_ENABLED:
+            return jsonify({"error": "Workflow engine not available"}), 503
+        
+        execution = workflow_engine.get_execution_status(execution_id)
+        
+        if not execution:
+            return jsonify({"error": "Execution not found"}), 404
+        
+        return jsonify({
+            "execution": execution,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get execution: {str(e)}"}), 500
+
+@app.route('/api/workflows/executions/<execution_id>/results', methods=['GET'])
+def get_workflow_results(execution_id):
+    """Get workflow execution results"""
+    try:
+        if not WORKFLOW_ENGINE_ENABLED:
+            return jsonify({"error": "Workflow engine not available"}), 503
+        
+        results = workflow_engine.get_execution_results(execution_id)
+        
+        if not results:
+            return jsonify({"error": "Execution not found"}), 404
+        
+        return jsonify({
+            "results": results,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get results: {str(e)}"}), 500
+
+# Webhook API Endpoints
+@app.route('/webhook/<source>', methods=['POST'])
+def receive_webhook(source):
+    """Receive webhook from external source"""
+    try:
+        if not WEBHOOK_SERVICE_ENABLED:
+            return jsonify({"error": "Webhook service not available"}), 503
+        
+        # Get request data
+        headers = dict(request.headers)
+        payload = request.get_json() or {}
+        ip_address = request.remote_addr
+        
+        # Process webhook
+        result = webhook_service.process_webhook(source, headers, payload, ip_address)
+        
+        if result['status'] == 'success':
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Webhook processing failed: {str(e)}"
+        }), 500
+
+@app.route('/api/webhooks/logs', methods=['GET'])
+def get_webhook_logs():
+    """Get webhook logs"""
+    try:
+        if not WEBHOOK_SERVICE_ENABLED:
+            return jsonify({"error": "Webhook service not available"}), 503
+        
+        source = request.args.get('source')
+        limit = int(request.args.get('limit', 100))
+        
+        logs = webhook_service.get_webhook_logs(source, limit)
+        
+        return jsonify({
+            "logs": logs,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get webhook logs: {str(e)}"}), 500
+
+@app.route('/api/webhooks/sources', methods=['GET'])
+def get_webhook_sources():
+    """Get configured webhook sources"""
+    try:
+        if not WEBHOOK_SERVICE_ENABLED:
+            return jsonify({"error": "Webhook service not available"}), 503
+        
+        sources = webhook_service.get_webhook_sources()
+        
+        return jsonify({
+            "sources": sources,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get webhook sources: {str(e)}"}), 500
+
+@app.route('/api/webhooks/statistics', methods=['GET'])
+def get_webhook_statistics():
+    """Get webhook statistics"""
+    try:
+        if not WEBHOOK_SERVICE_ENABLED:
+            return jsonify({"error": "Webhook service not available"}), 503
+        
+        stats = webhook_service.get_webhook_statistics()
+        
+        return jsonify({
+            "statistics": stats,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get webhook statistics: {str(e)}"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

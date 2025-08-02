@@ -1,0 +1,112 @@
+id: daily_summary
+name: Daily Activity Summary
+description: Generate and send a daily summary of chat activity and system usage
+version: 1.0.0
+triggers:
+  - scheduled_daily
+  - manual
+
+metadata:
+  author: Jarvis AI Assistant
+  category: reporting
+  tags: [summary, daily, analytics, reporting]
+  schedule: "0 0 18 * * *"  # Daily at 6 PM
+
+steps:
+  - id: gather_chat_statistics
+    type: tool
+    name: Gather Chat Statistics
+    config:
+      tool_name: web_search
+      query: "Get daily chat statistics and user activity from logs"
+    next_step: gather_system_metrics
+    error_step: log_error
+
+  - id: gather_system_metrics
+    type: api_call
+    name: Gather System Metrics
+    config:
+      url: "{{context.backend_url}}/diagnose"
+      method: GET
+      headers:
+        Content-Type: "application/json"
+    next_step: gather_user_statistics
+    error_step: log_error
+
+  - id: gather_user_statistics
+    type: api_call
+    name: Gather User Statistics
+    config:
+      url: "{{context.backend_url}}/api/users/statistics"
+      method: GET
+      headers:
+        Authorization: "Bearer {{context.admin_token}}"
+        Content-Type: "application/json"
+    next_step: generate_summary_report
+    error_step: log_error
+
+  - id: generate_summary_report
+    type: tool
+    name: Generate Summary Report
+    config:
+      tool_name: text_analyzer
+      query: |
+        Generate a comprehensive daily summary report with the following data:
+        
+        Chat Statistics: {{results.gather_chat_statistics.result}}
+        System Metrics: {{results.gather_system_metrics.response}}
+        User Statistics: {{results.gather_user_statistics.response}}
+        
+        Include:
+        - Total conversations and messages
+        - Most active users
+        - System health and performance
+        - Tool usage statistics
+        - File processing summary
+        - Any errors or issues
+        - Recommendations for tomorrow
+    next_step: save_report
+    error_step: log_error
+
+  - id: save_report
+    type: file_operation
+    name: Save Daily Report
+    config:
+      operation: write
+      filepath: "/tmp/daily_summary_{{context.date}}.md"
+      content: "{{results.generate_summary_report.result}}"
+    next_step: send_admin_notification
+    error_step: log_error
+
+  - id: send_admin_notification
+    type: api_call
+    name: Send Admin Notification
+    config:
+      url: "{{context.slack_webhook_url}}"
+      method: POST
+      headers:
+        Content-Type: "application/json"
+      payload:
+        text: |
+          📊 Daily Jarvis AI Summary - {{context.date}}
+          
+          {{results.generate_summary_report.result}}
+          
+          Full report saved to: {{results.save_report.filepath}}
+    next_step: log_success
+    error_step: log_error
+
+  - id: log_success
+    type: notification
+    name: Log Success
+    config:
+      type: log
+      message: "Daily summary generated and sent successfully for {{context.date}}"
+
+  - id: log_error
+    type: notification
+    name: Log Error
+    config:
+      type: log
+      message: "Failed to generate daily summary: {{results.error}}"
+

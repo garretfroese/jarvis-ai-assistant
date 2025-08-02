@@ -1,0 +1,69 @@
+id: send_followup_email
+name: Send Follow-up Email
+description: Automatically send a follow-up email when a Calendly appointment is booked
+version: 1.0.0
+triggers:
+  - calendly_webhook
+  - manual
+
+metadata:
+  author: Jarvis AI Assistant
+  category: communication
+  tags: [email, calendly, automation]
+
+steps:
+  - id: extract_appointment_data
+    type: decision
+    name: Extract Appointment Data
+    config:
+      condition: "{{context.payload.event}} == 'invitee.created'"
+    next_step: prepare_email_content
+    error_step: log_error
+
+  - id: prepare_email_content
+    type: tool
+    name: Prepare Email Content
+    config:
+      tool_name: text_analyzer
+      query: "Generate a professional follow-up email for appointment with {{context.payload.payload.invitee.name}} scheduled for {{context.payload.payload.event.start_time}}"
+    next_step: send_email_notification
+    error_step: log_error
+
+  - id: send_email_notification
+    type: api_call
+    name: Send Email via API
+    config:
+      url: "https://api.sendgrid.com/v3/mail/send"
+      method: POST
+      headers:
+        Authorization: "Bearer {{context.sendgrid_api_key}}"
+        Content-Type: "application/json"
+      payload:
+        personalizations:
+          - to:
+              - email: "{{context.payload.payload.invitee.email}}"
+                name: "{{context.payload.payload.invitee.name}}"
+        from:
+          email: "noreply@jarvis-ai.com"
+          name: "Jarvis AI Assistant"
+        subject: "Appointment Confirmation - {{context.payload.payload.event.name}}"
+        content:
+          - type: "text/html"
+            value: "{{results.prepare_email_content.result}}"
+    next_step: log_success
+    error_step: log_error
+
+  - id: log_success
+    type: notification
+    name: Log Success
+    config:
+      type: log
+      message: "Follow-up email sent successfully to {{context.payload.payload.invitee.email}}"
+
+  - id: log_error
+    type: notification
+    name: Log Error
+    config:
+      type: log
+      message: "Failed to send follow-up email: {{results.error}}"
+

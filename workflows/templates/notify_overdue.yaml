@@ -1,0 +1,177 @@
+id: notify_overdue
+name: Notify Overdue Tasks
+description: Check for failed commands and overdue tasks, send notifications to administrators
+version: 1.0.0
+triggers:
+  - scheduled_hourly
+  - manual
+  - error_threshold
+
+metadata:
+  author: Jarvis AI Assistant
+  category: monitoring
+  tags: [monitoring, alerts, errors, notifications]
+  schedule: "0 0 * * * *"  # Every hour
+
+steps:
+  - id: check_error_logs
+    type: api_call
+    name: Check Error Logs
+    config:
+      url: "{{context.backend_url}}/api/logs"
+      method: GET
+      headers:
+        Authorization: "Bearer {{context.admin_token}}"
+        Content-Type: "application/json"
+      payload:
+        level: error
+        hours: 1
+    next_step: check_failed_workflows
+    error_step: log_error
+
+  - id: check_failed_workflows
+    type: api_call
+    name: Check Failed Workflows
+    config:
+      url: "{{context.backend_url}}/api/workflows/executions"
+      method: GET
+      headers:
+        Authorization: "Bearer {{context.admin_token}}"
+        Content-Type: "application/json"
+      payload:
+        status: failed
+        hours: 1
+    next_step: check_system_health
+    error_step: log_error
+
+  - id: check_system_health
+    type: api_call
+    name: Check System Health
+    config:
+      url: "{{context.backend_url}}/diagnose"
+      method: GET
+      headers:
+        Content-Type: "application/json"
+    next_step: analyze_issues
+    error_step: log_error
+
+  - id: analyze_issues
+    type: decision
+    name: Analyze Issues
+    config:
+      condition: "{{results.check_error_logs.response|length}} > 0 or {{results.check_failed_workflows.response|length}} > 0"
+    next_step: generate_alert_message
+    error_step: log_no_issues
+
+  - id: generate_alert_message
+    type: tool
+    name: Generate Alert Message
+    config:
+      tool_name: text_analyzer
+      query: |
+        Generate an urgent alert message for system administrators based on:
+        
+        Error Logs (last hour): {{results.check_error_logs.response}}
+        Failed Workflows (last hour): {{results.check_failed_workflows.response}}
+        System Health: {{results.check_system_health.response}}
+        
+        Include:
+        - Summary of critical issues
+        - Number of errors and failures
+        - Affected systems or users
+        - Recommended immediate actions
+        - Severity level assessment
+    next_step: send_slack_alert
+    error_step: log_error
+
+  - id: send_slack_alert
+    type: api_call
+    name: Send Slack Alert
+    config:
+      url: "{{context.slack_webhook_url}}"
+      method: POST
+      headers:
+        Content-Type: "application/json"
+      payload:
+        text: |
+          🚨 JARVIS AI SYSTEM ALERT 🚨
+          
+          {{results.generate_alert_message.result}}
+          
+          Timestamp: {{context.timestamp}}
+          Server: {{context.backend_url}}
+        attachments:
+          - color: "danger"
+            title: "Error Details"
+            text: "{{results.check_error_logs.response|length}} errors, {{results.check_failed_workflows.response|length}} failed workflows"
+            fields:
+              - title: "Error Count"
+                value: "{{results.check_error_logs.response|length}}"
+                short: true
+              - title: "Failed Workflows"
+                value: "{{results.check_failed_workflows.response|length}}"
+                short: true
+    next_step: send_email_alert
+    error_step: log_error
+
+  - id: send_email_alert
+    type: api_call
+    name: Send Email Alert
+    config:
+      url: "https://api.sendgrid.com/v3/mail/send"
+      method: POST
+      headers:
+        Authorization: "Bearer {{context.sendgrid_api_key}}"
+        Content-Type: "application/json"
+      payload:
+        personalizations:
+          - to:
+              - email: "{{context.admin_email}}"
+                name: "System Administrator"
+        from:
+          email: "alerts@jarvis-ai.com"
+          name: "Jarvis AI Monitoring"
+        subject: "🚨 URGENT: Jarvis AI System Alert - {{context.timestamp}}"
+        content:
+          - type: "text/html"
+            value: |
+              <h2>🚨 Jarvis AI System Alert</h2>
+              <p><strong>Timestamp:</strong> {{context.timestamp}}</p>
+              <p><strong>Server:</strong> {{context.backend_url}}</p>
+              
+              <h3>Alert Details:</h3>
+              <div style="background-color: #f8f9fa; padding: 15px; border-left: 4px solid #dc3545;">
+                {{results.generate_alert_message.result}}
+              </div>
+              
+              <h3>Summary:</h3>
+              <ul>
+                <li><strong>Errors (last hour):</strong> {{results.check_error_logs.response|length}}</li>
+                <li><strong>Failed Workflows:</strong> {{results.check_failed_workflows.response|length}}</li>
+              </ul>
+              
+              <p><em>This is an automated alert from Jarvis AI Monitoring System.</em></p>
+    next_step: log_alert_sent
+    error_step: log_error
+
+  - id: log_alert_sent
+    type: notification
+    name: Log Alert Sent
+    config:
+      type: log
+      message: "System alert sent successfully - {{results.check_error_logs.response|length}} errors, {{results.check_failed_workflows.response|length}} failed workflows"
+
+  - id: log_no_issues
+    type: notification
+    name: Log No Issues
+    config:
+      type: log
+      message: "System health check completed - no critical issues found"
+
+  - id: log_error
+    type: notification
+    name: Log Error
+    config:
+      type: log
+      message: "Failed to complete overdue task monitoring: {{results.error}}"
+
