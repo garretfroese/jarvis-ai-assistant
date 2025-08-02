@@ -64,6 +64,8 @@ try:
     from src.services.memory_loader import memory_loader
     from src.services.watchdog_agent import watchdog_agent
     from src.services.state_manager import state_manager
+    from src.services.api_gateway import api_gateway
+    from src.services.external_api import external_api
     USER_SERVICE_ENABLED = True
     WORKFLOW_ENGINE_ENABLED = True
     WEBHOOK_SERVICE_ENABLED = True
@@ -74,6 +76,8 @@ try:
     MEMORY_LOADER_ENABLED = True
     WATCHDOG_AGENT_ENABLED = True
     STATE_MANAGER_ENABLED = True
+    API_GATEWAY_ENABLED = True
+    EXTERNAL_API_ENABLED = True
     print("✅ User service loaded successfully")
     print("✅ Workflow engine loaded successfully")
     print("✅ Webhook service loaded successfully")
@@ -84,6 +88,8 @@ try:
     print("✅ Memory loader loaded successfully")
     print("✅ Watchdog agent loaded successfully")
     print("✅ State manager loaded successfully")
+    print("✅ API gateway loaded successfully")
+    print("✅ External API loaded successfully")
 except ImportError as e:
     print(f"⚠️ Services not available: {e}")
     USER_SERVICE_ENABLED = False
@@ -129,6 +135,11 @@ if ADVANCED_FILE_PROCESSING:
     print("✅ Advanced file processor initialized")
 else:
     file_processor = None
+
+# Register external API routes
+if EXTERNAL_API_ENABLED:
+    external_api.register_routes(app)
+    print("✅ External API routes registered")
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -2245,6 +2256,114 @@ def get_state_files_info():
         
     except Exception as e:
         return jsonify({"error": f"Failed to get state files info: {str(e)}"}), 500
+
+# ===== PHASE 7: API GATEWAY & EXTERNAL API ENDPOINTS =====
+
+@app.route('/api/gateway/keys', methods=['GET'])
+def list_api_keys():
+    """List all API keys (admin only)"""
+    try:
+        if not API_GATEWAY_ENABLED:
+            return jsonify({"error": "API Gateway not available"}), 503
+        
+        include_inactive = request.args.get('include_inactive', 'false').lower() == 'true'
+        keys = api_gateway.list_api_keys(include_inactive)
+        
+        return jsonify({
+            "api_keys": keys,
+            "total": len(keys),
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to list API keys: {str(e)}"}), 500
+
+@app.route('/api/gateway/keys', methods=['POST'])
+def create_api_key():
+    """Create new API key (admin only)"""
+    try:
+        if not API_GATEWAY_ENABLED:
+            return jsonify({"error": "API Gateway not available"}), 503
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON data required"}), 400
+        
+        name = data.get('name', '').strip()
+        permissions = data.get('permissions', [])
+        expires_days = data.get('expires_days')
+        ip_whitelist = data.get('ip_whitelist', [])
+        
+        if not name:
+            return jsonify({"error": "Name is required"}), 400
+        
+        if not permissions:
+            return jsonify({"error": "At least one permission is required"}), 400
+        
+        # Create API key
+        result = api_gateway.create_api_key(
+            name=name,
+            permissions=permissions,
+            created_by="admin",  # This would come from authenticated user
+            expires_days=expires_days,
+            ip_whitelist=ip_whitelist
+        )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to create API key: {str(e)}"}), 500
+
+@app.route('/api/gateway/keys/<key_id>', methods=['DELETE'])
+def revoke_api_key(key_id):
+    """Revoke API key (admin only)"""
+    try:
+        if not API_GATEWAY_ENABLED:
+            return jsonify({"error": "API Gateway not available"}), 503
+        
+        success = api_gateway.revoke_api_key(key_id, "admin")
+        
+        if success:
+            return jsonify({
+                "message": "API key revoked successfully",
+                "status": "success"
+            })
+        else:
+            return jsonify({"error": "API key not found"}), 404
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to revoke API key: {str(e)}"}), 500
+
+@app.route('/api/gateway/keys/<key_id>/stats', methods=['GET'])
+def get_api_key_stats(key_id):
+    """Get API key usage statistics"""
+    try:
+        if not API_GATEWAY_ENABLED:
+            return jsonify({"error": "API Gateway not available"}), 503
+        
+        stats = api_gateway.get_api_key_stats(key_id)
+        
+        if stats:
+            return jsonify(stats)
+        else:
+            return jsonify({"error": "API key not found"}), 404
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get API key stats: {str(e)}"}), 500
+
+@app.route('/api/gateway/stats', methods=['GET'])
+def get_gateway_stats():
+    """Get API gateway statistics"""
+    try:
+        if not API_GATEWAY_ENABLED:
+            return jsonify({"error": "API Gateway not available"}), 503
+        
+        stats = api_gateway.get_gateway_stats()
+        
+        return jsonify(stats)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get gateway stats: {str(e)}"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
