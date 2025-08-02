@@ -1,0 +1,27 @@
+{
+  "active_plugins": {
+    "calculator": {
+      "enabled": true,
+      "last_used": null,
+      "usage_count": 0,
+      "configuration": {}
+    },
+    "text_processor": {
+      "enabled": true,
+      "last_used": null,
+      "usage_count": 0,
+      "configuration": {}
+    },
+    "web_scraper": {
+      "enabled": true,
+      "last_used": null,
+      "usage_count": 0,
+      "configuration": {
+        "timeout": 30,
+        "max_content_length": 100000
+      }
+    }
+  },
+  "plugin_cache": {},
+  "execution_history": []
+}

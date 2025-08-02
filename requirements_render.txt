@@ -7,4 +7,5 @@ PyJWT==2.8.0
 bcrypt==4.3.0
 PyYAML==6.0.1
 openai==1.98.0
+psutil==6.1.0
 

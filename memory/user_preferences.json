@@ -1,0 +1,16 @@
+{
+  "default_settings": {
+    "theme": "light",
+    "language": "en",
+    "response_style": "balanced",
+    "auto_save": true,
+    "notifications": true
+  },
+  "user_specific": {},
+  "global_preferences": {
+    "max_response_length": 2000,
+    "enable_file_upload": true,
+    "enable_tool_usage": true,
+    "enable_workflows": true
+  }
+}

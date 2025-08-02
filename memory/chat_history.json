@@ -1,0 +1,13 @@
+{
+  "sessions": {},
+  "global_context": {
+    "user_preferences": {},
+    "conversation_themes": [],
+    "frequently_asked": []
+  },
+  "statistics": {
+    "total_conversations": 0,
+    "total_messages": 0,
+    "average_session_length": 0
+  }
+}

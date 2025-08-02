@@ -59,8 +59,11 @@ try:
     from src.services.webhook_service import webhook_service
     from src.services.command_router import command_router
     from src.services.risk_filter import risk_filter
-    from src.services.rbac_manager import rbac_manager
     from src.plugins.plugin_sandbox import plugin_sandbox
+    from src.services.rbac_manager import rbac_manager
+    from src.services.memory_loader import memory_loader
+    from src.services.watchdog_agent import watchdog_agent
+    from src.services.state_manager import state_manager
     USER_SERVICE_ENABLED = True
     WORKFLOW_ENGINE_ENABLED = True
     WEBHOOK_SERVICE_ENABLED = True
@@ -68,6 +71,9 @@ try:
     RISK_FILTER_ENABLED = True
     RBAC_MANAGER_ENABLED = True
     PLUGIN_SANDBOX_ENABLED = True
+    MEMORY_LOADER_ENABLED = True
+    WATCHDOG_AGENT_ENABLED = True
+    STATE_MANAGER_ENABLED = True
     print("✅ User service loaded successfully")
     print("✅ Workflow engine loaded successfully")
     print("✅ Webhook service loaded successfully")
@@ -75,6 +81,9 @@ try:
     print("✅ Risk filter loaded successfully")
     print("✅ RBAC manager loaded successfully")
     print("✅ Plugin sandbox loaded successfully")
+    print("✅ Memory loader loaded successfully")
+    print("✅ Watchdog agent loaded successfully")
+    print("✅ State manager loaded successfully")
 except ImportError as e:
     print(f"⚠️ Services not available: {e}")
     USER_SERVICE_ENABLED = False
@@ -2070,6 +2079,172 @@ def get_security_statistics():
         
     except Exception as e:
         return jsonify({"error": f"Failed to get security statistics: {str(e)}"}), 500
+
+# ===== PHASE 6: MEMORY & SELF-HEALING API ENDPOINTS =====
+
+@app.route('/api/memory/status', methods=['GET'])
+def get_memory_status():
+    """Get memory system status"""
+    try:
+        if not MEMORY_LOADER_ENABLED:
+            return jsonify({"error": "Memory loader not available"}), 503
+        
+        status = memory_loader.get_memory_status()
+        
+        return jsonify(status)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get memory status: {str(e)}"}), 500
+
+@app.route('/api/memory/load', methods=['GET'])
+def load_memory():
+    """Load memory from disk"""
+    try:
+        if not MEMORY_LOADER_ENABLED:
+            return jsonify({"error": "Memory loader not available"}), 503
+        
+        memory_type = request.args.get('type', 'all')
+        
+        result = memory_loader.load_memory(memory_type)
+        
+        return jsonify({
+            "memory": result,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to load memory: {str(e)}"}), 500
+
+@app.route('/api/memory/reload', methods=['POST'])
+def reload_memory():
+    """Force reload memory from disk"""
+    try:
+        if not MEMORY_LOADER_ENABLED:
+            return jsonify({"error": "Memory loader not available"}), 503
+        
+        data = request.get_json() or {}
+        memory_type = data.get('type', 'all')
+        force = data.get('force', False)
+        
+        result = memory_loader.reload_memory(memory_type, force)
+        
+        return jsonify({
+            "memory": result,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to reload memory: {str(e)}"}), 500
+
+@app.route('/api/watchdog/status', methods=['GET'])
+def get_watchdog_status():
+    """Get watchdog health status"""
+    try:
+        if not WATCHDOG_AGENT_ENABLED:
+            return jsonify({"error": "Watchdog agent not available"}), 503
+        
+        status = watchdog_agent.get_health_status()
+        
+        return jsonify(status)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get watchdog status: {str(e)}"}), 500
+
+@app.route('/api/watchdog/check', methods=['POST'])
+def force_health_check():
+    """Force immediate health check"""
+    try:
+        if not WATCHDOG_AGENT_ENABLED:
+            return jsonify({"error": "Watchdog agent not available"}), 503
+        
+        result = watchdog_agent.force_health_check()
+        
+        return jsonify({
+            "health_check": result,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to force health check: {str(e)}"}), 500
+
+@app.route('/api/watchdog/history', methods=['GET'])
+def get_health_history():
+    """Get health check history"""
+    try:
+        if not WATCHDOG_AGENT_ENABLED:
+            return jsonify({"error": "Watchdog agent not available"}), 503
+        
+        limit = int(request.args.get('limit', 50))
+        history = watchdog_agent.get_health_history(limit)
+        
+        return jsonify({
+            "history": history,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get health history: {str(e)}"}), 500
+
+@app.route('/api/state/export', methods=['GET'])
+def export_system_state():
+    """Export complete system state"""
+    try:
+        if not STATE_MANAGER_ENABLED:
+            return jsonify({"error": "State manager not available"}), 503
+        
+        include_sensitive = request.args.get('include_sensitive', 'false').lower() == 'true'
+        
+        state = state_manager.export_system_state(include_sensitive)
+        
+        return jsonify(state)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to export system state: {str(e)}"}), 500
+
+@app.route('/api/state/plugin-cache', methods=['GET'])
+def get_plugin_cache_status():
+    """Get plugin cache status"""
+    try:
+        if not STATE_MANAGER_ENABLED:
+            return jsonify({"error": "State manager not available"}), 503
+        
+        status = state_manager.get_plugin_cache_status()
+        
+        return jsonify(status)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get plugin cache status: {str(e)}"}), 500
+
+@app.route('/api/state/plugin-cache/refresh', methods=['POST'])
+def refresh_plugin_cache():
+    """Refresh plugin cache"""
+    try:
+        if not STATE_MANAGER_ENABLED:
+            return jsonify({"error": "State manager not available"}), 503
+        
+        success = state_manager.refresh_plugin_cache()
+        
+        return jsonify({
+            "success": success,
+            "status": "success" if success else "failed"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to refresh plugin cache: {str(e)}"}), 500
+
+@app.route('/api/state/files', methods=['GET'])
+def get_state_files_info():
+    """Get state files information"""
+    try:
+        if not STATE_MANAGER_ENABLED:
+            return jsonify({"error": "State manager not available"}), 503
+        
+        info = state_manager.get_state_files_info()
+        
+        return jsonify(info)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get state files info: {str(e)}"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

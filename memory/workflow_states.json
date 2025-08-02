@@ -1,0 +1,21 @@
+{
+  "active_workflows": {},
+  "workflow_templates": {
+    "send_followup_email": {
+      "enabled": true,
+      "last_executed": null,
+      "execution_count": 0
+    },
+    "daily_summary": {
+      "enabled": true,
+      "last_executed": null,
+      "execution_count": 0
+    },
+    "notify_overdue": {
+      "enabled": true,
+      "last_executed": null,
+      "execution_count": 0
+    }
+  },
+  "execution_history": []
+}
