@@ -57,17 +57,33 @@ try:
     from src.services.user_service import user_service
     from src.services.workflow_engine import workflow_engine
     from src.services.webhook_service import webhook_service
+    from src.services.command_router import command_router
+    from src.services.risk_filter import risk_filter
+    from src.services.rbac_manager import rbac_manager
+    from src.plugins.plugin_sandbox import plugin_sandbox
     USER_SERVICE_ENABLED = True
     WORKFLOW_ENGINE_ENABLED = True
     WEBHOOK_SERVICE_ENABLED = True
+    COMMAND_ROUTER_ENABLED = True
+    RISK_FILTER_ENABLED = True
+    RBAC_MANAGER_ENABLED = True
+    PLUGIN_SANDBOX_ENABLED = True
     print("✅ User service loaded successfully")
     print("✅ Workflow engine loaded successfully")
     print("✅ Webhook service loaded successfully")
+    print("✅ Command router loaded successfully")
+    print("✅ Risk filter loaded successfully")
+    print("✅ RBAC manager loaded successfully")
+    print("✅ Plugin sandbox loaded successfully")
 except ImportError as e:
-    print(f"⚠️ User service not available: {e}")
+    print(f"⚠️ Services not available: {e}")
     USER_SERVICE_ENABLED = False
     WORKFLOW_ENGINE_ENABLED = False
     WEBHOOK_SERVICE_ENABLED = False
+    COMMAND_ROUTER_ENABLED = False
+    RISK_FILTER_ENABLED = False
+    RBAC_MANAGER_ENABLED = False
+    PLUGIN_SANDBOX_ENABLED = False
 
 # Load environment variables
 load_dotenv()
@@ -1726,6 +1742,334 @@ def get_webhook_statistics():
         
     except Exception as e:
         return jsonify({"error": f"Failed to get webhook statistics: {str(e)}"}), 500
+
+# Phase 5: Command Router API Endpoints
+@app.route('/api/route', methods=['POST'])
+def route_command():
+    """Intelligent command routing"""
+    try:
+        if not COMMAND_ROUTER_ENABLED:
+            return jsonify({"error": "Command router not available"}), 503
+        
+        data = request.get_json() or {}
+        message = data.get('message', '')
+        user_id = data.get('user_id')
+        context = data.get('context', {})
+        
+        if not message:
+            return jsonify({"error": "No message provided"}), 400
+        
+        # Route the command
+        classification = command_router.route_command(message, user_id, context)
+        
+        return jsonify({
+            "classification": {
+                "command_type": classification.command_type.value,
+                "handler": classification.handler,
+                "confidence": classification.confidence,
+                "reasoning": classification.reasoning,
+                "parameters": classification.parameters
+            },
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Command routing failed: {str(e)}"}), 500
+
+@app.route('/api/command', methods=['POST'])
+def execute_command():
+    """Secure command execution with risk assessment"""
+    try:
+        if not COMMAND_ROUTER_ENABLED or not RISK_FILTER_ENABLED:
+            return jsonify({"error": "Command execution services not available"}), 503
+        
+        data = request.get_json() or {}
+        message = data.get('message', '')
+        user_id = data.get('user_id')
+        context = data.get('context', {})
+        ip_address = request.remote_addr
+        
+        if not message:
+            return jsonify({"error": "No message provided"}), 400
+        
+        # Risk assessment
+        risk_assessment = risk_filter.assess_risk(message, user_id or 'anonymous', context, ip_address)
+        
+        if risk_assessment.blocked:
+            return jsonify({
+                "status": "blocked",
+                "risk_assessment": {
+                    "risk_level": risk_assessment.risk_level.value,
+                    "reasoning": risk_assessment.reasoning,
+                    "recommendations": risk_assessment.recommendations
+                },
+                "message": "Command blocked due to security risk"
+            }), 403
+        
+        # Route and execute command
+        classification = command_router.route_command(message, user_id, context)
+        result = command_router.execute_command(classification, user_id, context)
+        
+        return jsonify({
+            "status": "executed",
+            "classification": {
+                "command_type": classification.command_type.value,
+                "handler": classification.handler,
+                "confidence": classification.confidence
+            },
+            "risk_assessment": {
+                "risk_level": risk_assessment.risk_level.value,
+                "confidence": risk_assessment.confidence
+            },
+            "result": result
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Command execution failed: {str(e)}"}), 500
+
+# Plugin API Endpoints
+@app.route('/api/plugins', methods=['GET'])
+def get_plugins():
+    """Get available plugins"""
+    try:
+        if not PLUGIN_SANDBOX_ENABLED:
+            return jsonify({"error": "Plugin sandbox not available"}), 503
+        
+        plugins = plugin_sandbox.list_plugins()
+        
+        return jsonify({
+            "plugins": plugins,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get plugins: {str(e)}"}), 500
+
+@app.route('/api/plugins/execute', methods=['POST'])
+def execute_plugin():
+    """Execute plugin in sandbox"""
+    try:
+        if not PLUGIN_SANDBOX_ENABLED:
+            return jsonify({"error": "Plugin sandbox not available"}), 503
+        
+        data = request.get_json() or {}
+        plugin_name = data.get('plugin_name')
+        input_data = data.get('input_data', {})
+        user_id = data.get('user_id')
+        timeout = data.get('timeout')
+        
+        if not plugin_name:
+            return jsonify({"error": "No plugin name provided"}), 400
+        
+        # Check permissions
+        if RBAC_MANAGER_ENABLED and user_id:
+            from src.services.rbac_manager import Permission
+            if not rbac_manager.has_permission(user_id, Permission.PLUGIN_EXECUTION):
+                return jsonify({"error": "Insufficient permissions for plugin execution"}), 403
+        
+        # Execute plugin
+        execution_id = plugin_sandbox.execute_plugin(plugin_name, input_data, user_id or 'anonymous', timeout)
+        
+        return jsonify({
+            "execution_id": execution_id,
+            "plugin_name": plugin_name,
+            "status": "started",
+            "message": "Plugin execution started"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Plugin execution failed: {str(e)}"}), 500
+
+@app.route('/api/plugins/executions/<execution_id>', methods=['GET'])
+def get_plugin_execution(execution_id):
+    """Get plugin execution status"""
+    try:
+        if not PLUGIN_SANDBOX_ENABLED:
+            return jsonify({"error": "Plugin sandbox not available"}), 503
+        
+        execution = plugin_sandbox.get_execution_status(execution_id)
+        
+        if not execution:
+            return jsonify({"error": "Execution not found"}), 404
+        
+        return jsonify({
+            "execution": execution,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get execution: {str(e)}"}), 500
+
+@app.route('/api/plugins/executions/<execution_id>/results', methods=['GET'])
+def get_plugin_results(execution_id):
+    """Get plugin execution results"""
+    try:
+        if not PLUGIN_SANDBOX_ENABLED:
+            return jsonify({"error": "Plugin sandbox not available"}), 503
+        
+        result = plugin_sandbox.get_execution_result(execution_id)
+        
+        if not result:
+            return jsonify({"error": "Execution not found"}), 404
+        
+        return jsonify({
+            "result": result,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get results: {str(e)}"}), 500
+
+@app.route('/api/plugins/executions/<execution_id>/kill', methods=['POST'])
+def kill_plugin_execution(execution_id):
+    """Kill running plugin execution"""
+    try:
+        if not PLUGIN_SANDBOX_ENABLED:
+            return jsonify({"error": "Plugin sandbox not available"}), 503
+        
+        success = plugin_sandbox.kill_execution(execution_id)
+        
+        return jsonify({
+            "success": success,
+            "message": "Execution killed" if success else "Failed to kill execution"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to kill execution: {str(e)}"}), 500
+
+# RBAC API Endpoints
+@app.route('/api/permissions', methods=['GET'])
+def get_user_permissions():
+    """Get user permissions"""
+    try:
+        if not RBAC_MANAGER_ENABLED:
+            return jsonify({"error": "RBAC manager not available"}), 503
+        
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({"error": "No user_id provided"}), 400
+        
+        permissions = rbac_manager.get_user_role_summary(user_id)
+        
+        return jsonify({
+            "permissions": permissions,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get permissions: {str(e)}"}), 500
+
+@app.route('/api/permissions/check', methods=['POST'])
+def check_permission():
+    """Check specific permission"""
+    try:
+        if not RBAC_MANAGER_ENABLED:
+            return jsonify({"error": "RBAC manager not available"}), 503
+        
+        data = request.get_json() or {}
+        user_id = data.get('user_id')
+        permission = data.get('permission')
+        
+        if not user_id or not permission:
+            return jsonify({"error": "user_id and permission required"}), 400
+        
+        from src.services.rbac_manager import Permission as PermissionEnum
+        try:
+            perm_enum = PermissionEnum(permission)
+            has_permission = rbac_manager.has_permission(user_id, perm_enum)
+        except ValueError:
+            return jsonify({"error": f"Invalid permission: {permission}"}), 400
+        
+        return jsonify({
+            "user_id": user_id,
+            "permission": permission,
+            "has_permission": has_permission,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Permission check failed: {str(e)}"}), 500
+
+@app.route('/api/roles', methods=['GET'])
+def get_roles():
+    """Get all available roles"""
+    try:
+        if not RBAC_MANAGER_ENABLED:
+            return jsonify({"error": "RBAC manager not available"}), 503
+        
+        roles = rbac_manager.get_all_roles()
+        
+        return jsonify({
+            "roles": roles,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get roles: {str(e)}"}), 500
+
+@app.route('/api/permissions/all', methods=['GET'])
+def get_all_permissions():
+    """Get all available permissions"""
+    try:
+        if not RBAC_MANAGER_ENABLED:
+            return jsonify({"error": "RBAC manager not available"}), 503
+        
+        permissions = rbac_manager.get_all_permissions()
+        
+        return jsonify({
+            "permissions": permissions,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get permissions: {str(e)}"}), 500
+
+# Security API Endpoints
+@app.route('/api/security/events', methods=['GET'])
+def get_security_events():
+    """Get security events"""
+    try:
+        if not RISK_FILTER_ENABLED:
+            return jsonify({"error": "Risk filter not available"}), 503
+        
+        user_id = request.args.get('user_id')
+        risk_level = request.args.get('risk_level')
+        limit = int(request.args.get('limit', 100))
+        
+        from src.services.risk_filter import RiskLevel
+        risk_level_enum = None
+        if risk_level:
+            try:
+                risk_level_enum = RiskLevel(risk_level.lower())
+            except ValueError:
+                return jsonify({"error": f"Invalid risk level: {risk_level}"}), 400
+        
+        events = risk_filter.get_security_events(user_id, risk_level_enum, limit)
+        
+        return jsonify({
+            "events": events,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get security events: {str(e)}"}), 500
+
+@app.route('/api/security/statistics', methods=['GET'])
+def get_security_statistics():
+    """Get security statistics"""
+    try:
+        if not RISK_FILTER_ENABLED:
+            return jsonify({"error": "Risk filter not available"}), 503
+        
+        stats = risk_filter.get_security_statistics()
+        
+        return jsonify({
+            "statistics": stats,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get security statistics: {str(e)}"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
