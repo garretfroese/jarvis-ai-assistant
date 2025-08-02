@@ -68,6 +68,7 @@ try:
     from src.services.external_api import external_api
     from src.services.compliance_engine import compliance_engine
     from src.services.governance_framework import governance_framework
+    from src.integrations.twilio_integration import twilio_integration
     USER_SERVICE_ENABLED = True
     WORKFLOW_ENGINE_ENABLED = True
     WEBHOOK_SERVICE_ENABLED = True
@@ -82,6 +83,7 @@ try:
     EXTERNAL_API_ENABLED = True
     COMPLIANCE_ENGINE_ENABLED = True
     GOVERNANCE_FRAMEWORK_ENABLED = True
+    TWILIO_INTEGRATION_ENABLED = True
     print("✅ User service loaded successfully")
     print("✅ Workflow engine loaded successfully")
     print("✅ Webhook service loaded successfully")
@@ -96,6 +98,7 @@ try:
     print("✅ External API loaded successfully")
     print("✅ Compliance engine loaded successfully")
     print("✅ Governance framework loaded successfully")
+    print("✅ Twilio integration loaded successfully")
 except ImportError as e:
     print(f"⚠️ Services not available: {e}")
     USER_SERVICE_ENABLED = False
@@ -2656,6 +2659,188 @@ def request_data_access():
         
     except Exception as e:
         return jsonify({"error": f"Failed to request data access: {str(e)}"}), 500
+
+# ===== EMPIRE INTEGRATIONS: TWILIO =====
+
+@app.route('/api/integrations/twilio/sms/send', methods=['POST'])
+def send_sms():
+    """Send SMS message via Twilio"""
+    try:
+        if not TWILIO_INTEGRATION_ENABLED:
+            return jsonify({"error": "Twilio integration not available"}), 503
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON data required"}), 400
+        
+        to_number = data.get('to_number', '').strip()
+        message = data.get('message', '').strip()
+        from_number = data.get('from_number', '').strip()
+        
+        if not to_number or not message:
+            return jsonify({"error": "to_number and message are required"}), 400
+        
+        result = twilio_integration.send_sms(
+            to_number=to_number,
+            message=message,
+            from_number=from_number if from_number else None
+        )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to send SMS: {str(e)}"}), 500
+
+@app.route('/api/integrations/twilio/sms/<message_id>/status', methods=['GET'])
+def get_sms_status(message_id):
+    """Get SMS message status"""
+    try:
+        if not TWILIO_INTEGRATION_ENABLED:
+            return jsonify({"error": "Twilio integration not available"}), 503
+        
+        result = twilio_integration.get_sms_status(message_id)
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get SMS status: {str(e)}"}), 500
+
+@app.route('/api/integrations/twilio/sms/history', methods=['GET'])
+def get_sms_history():
+    """Get SMS message history"""
+    try:
+        if not TWILIO_INTEGRATION_ENABLED:
+            return jsonify({"error": "Twilio integration not available"}), 503
+        
+        phone_number = request.args.get('phone_number')
+        limit = int(request.args.get('limit', 50))
+        
+        history = twilio_integration.get_sms_history(phone_number, limit)
+        
+        return jsonify({
+            "history": history,
+            "total": len(history),
+            "phone_number": phone_number,
+            "limit": limit
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get SMS history: {str(e)}"}), 500
+
+@app.route('/api/integrations/twilio/voice/call', methods=['POST'])
+def make_voice_call():
+    """Make voice call via Twilio"""
+    try:
+        if not TWILIO_INTEGRATION_ENABLED:
+            return jsonify({"error": "Twilio integration not available"}), 503
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON data required"}), 400
+        
+        to_number = data.get('to_number', '').strip()
+        twiml_url = data.get('twiml_url', '').strip()
+        from_number = data.get('from_number', '').strip()
+        
+        if not to_number:
+            return jsonify({"error": "to_number is required"}), 400
+        
+        result = twilio_integration.make_voice_call(
+            to_number=to_number,
+            twiml_url=twiml_url if twiml_url else None,
+            from_number=from_number if from_number else None
+        )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to make voice call: {str(e)}"}), 500
+
+@app.route('/api/integrations/twilio/voice/<call_id>/status', methods=['GET'])
+def get_call_status(call_id):
+    """Get voice call status"""
+    try:
+        if not TWILIO_INTEGRATION_ENABLED:
+            return jsonify({"error": "Twilio integration not available"}), 503
+        
+        result = twilio_integration.get_call_status(call_id)
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get call status: {str(e)}"}), 500
+
+@app.route('/api/integrations/twilio/rvm/send', methods=['POST'])
+def send_ringless_voicemail():
+    """Send ringless voicemail via Twilio"""
+    try:
+        if not TWILIO_INTEGRATION_ENABLED:
+            return jsonify({"error": "Twilio integration not available"}), 503
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON data required"}), 400
+        
+        to_number = data.get('to_number', '').strip()
+        audio_url = data.get('audio_url', '').strip()
+        
+        if not to_number or not audio_url:
+            return jsonify({"error": "to_number and audio_url are required"}), 400
+        
+        result = twilio_integration.send_ringless_voicemail(
+            to_number=to_number,
+            audio_url=audio_url
+        )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to send RVM: {str(e)}"}), 500
+
+@app.route('/api/integrations/twilio/webhook', methods=['POST'])
+def twilio_webhook():
+    """Handle Twilio webhooks"""
+    try:
+        if not TWILIO_INTEGRATION_ENABLED:
+            return jsonify({"error": "Twilio integration not available"}), 503
+        
+        webhook_data = request.form.to_dict()
+        
+        result = twilio_integration.handle_webhook(webhook_data)
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to process webhook: {str(e)}"}), 500
+
+@app.route('/api/integrations/twilio/stats', methods=['GET'])
+def get_twilio_stats():
+    """Get Twilio communication statistics"""
+    try:
+        if not TWILIO_INTEGRATION_ENABLED:
+            return jsonify({"error": "Twilio integration not available"}), 503
+        
+        stats = twilio_integration.get_communication_stats()
+        
+        return jsonify(stats)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get Twilio stats: {str(e)}"}), 500
+
+@app.route('/api/integrations/twilio/activity', methods=['GET'])
+def get_twilio_activity():
+    """Get recent Twilio activity"""
+    try:
+        if not TWILIO_INTEGRATION_ENABLED:
+            return jsonify({"error": "Twilio integration not available"}), 503
+        
+        hours = int(request.args.get('hours', 24))
+        activity = twilio_integration.get_recent_activity(hours)
+        
+        return jsonify(activity)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get Twilio activity: {str(e)}"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
